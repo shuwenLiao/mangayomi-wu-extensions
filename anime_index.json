@@ -218,5 +218,27 @@
     "additionalParams": "",
     "sourceCodeLanguage": 1,
     "notes": ""
+  },
+  {
+    "name": "RedGifs",
+    "id": 293847561,
+    "baseUrl": "https://www.redgifs.com",
+    "lang": "all",
+    "typeSource": "single",
+    "iconUrl": "https://www.redgifs.com/favicon.ico",
+    "dateFormat": "",
+    "dateFormatLocale": "",
+    "isNsfw": true,
+    "hasCloudflare": false,
+    "sourceCodeUrl": "https://raw.githubusercontent.com/shuwenLiao/mangayomi-wu-extensions/main/redgifs.js",
+    "apiUrl": "https://api.redgifs.com",
+    "version": "0.0.1",
+    "isManga": false,
+    "itemType": 1,
+    "isFullData": false,
+    "appMinVerReq": "0.5.0",
+    "additionalParams": "",
+    "sourceCodeLanguage": 1,
+    "notes": ""
   }
 ]
