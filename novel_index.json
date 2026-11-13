@@ -86,5 +86,27 @@
     "additionalParams": "",
     "sourceCodeLanguage": 1,
     "notes": "v0.1.4: bounded transient GET retries; paid prompt detection based on source chapter; preserve manual official payment links and v0.1.3 reader theme cleanup."
+  },
+  {
+    "name": "笔趣阁TW",
+    "id": 690722876,
+    "baseUrl": "https://www.biquge.com.tw",
+    "lang": "zh",
+    "typeSource": "single",
+    "iconUrl": "https://www.biquge.com.tw/favicon.ico",
+    "dateFormat": "",
+    "dateFormatLocale": "",
+    "isNsfw": false,
+    "hasCloudflare": false,
+    "sourceCodeUrl": "https://raw.githubusercontent.com/shuwenLiao/mangayomi-wu-extensions/main/biquge2.js",
+    "apiUrl": "",
+    "version": "0.0.1",
+    "isManga": false,
+    "itemType": 2,
+    "isFullData": false,
+    "appMinVerReq": "0.5.0",
+    "additionalParams": "",
+    "sourceCodeLanguage": 1,
+    "notes": ""
   }
 ]
