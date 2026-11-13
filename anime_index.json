@@ -174,5 +174,27 @@
     "additionalParams": "",
     "sourceCodeLanguage": 1,
     "notes": ""
+  },
+  {
+    "name": "红果短剧",
+    "id": 145648557,
+    "baseUrl": "https://hongguoduanju.com",
+    "lang": "zh",
+    "typeSource": "single",
+    "iconUrl": "https://hongguoduanju.com/favicon.ico",
+    "dateFormat": "",
+    "dateFormatLocale": "",
+    "isNsfw": false,
+    "hasCloudflare": false,
+    "sourceCodeUrl": "https://raw.githubusercontent.com/shuwenLiao/mangayomi-wu-extensions/main/hongguo.js",
+    "apiUrl": "",
+    "version": "0.0.1",
+    "isManga": false,
+    "itemType": 1,
+    "isFullData": false,
+    "appMinVerReq": "0.5.0",
+    "additionalParams": "",
+    "sourceCodeLanguage": 1,
+    "notes": ""
   }
 ]
