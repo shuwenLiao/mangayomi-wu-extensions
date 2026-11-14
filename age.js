@@ -7,7 +7,7 @@ const mangayomiSources = [{
   "typeSource": "single",
   "itemType": 1,
   "isNsfw": false,
-  "version": "0.0.2",
+  "version": "0.0.3",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "age.js"
@@ -51,6 +51,69 @@ class DefaultExtension extends MProvider {
     return String.fromCharCode.apply(null, charCodes);
   }
 
+  // 名字可能是正确的 UTF-8（站声明了 charset=utf-8，桥直接给正确中文），
+  // 也可能是 Latin-1 乱码（站没声明 charset 时桥按 Latin-1 解）。
+  // 已有中文就直接用，没有中文才按 UTF-8 重新解一次，避免把正确中文二次解成乱码。
+  fixText(text) {
+    if (!text) return "";
+    if (/[\u4E00-\u9FFF\u3400-\u4DBF\uF900-\uFAFF]/.test(text)) return text;
+    return this.stringUTF8(text, true);
+  }
+
+  // 列表页在内置浏览器里打开，等卡片出现后把整页 HTML 交回来；
+  // 静态请求拿不到内容（VPN/网络抖动、空响应）时的兜底，静态能拿到时不用它
+  async loadListViaWebview(url, readySelector) {
+    if (typeof evaluateJavascriptViaWebview !== "function") return "";
+    const script = `(function(){
+      if (window.__ageListRead) return;
+      window.__ageListRead = true;
+      var done = false, started = Date.now(), interval;
+      function send(value) {
+        if (done) return;
+        done = true;
+        if (interval) clearInterval(interval);
+        window.flutter_inappwebview.callHandler("setResponse", JSON.stringify(value));
+      }
+      function poll() {
+        var body = document.body;
+        if (body) {
+          var markup = document.documentElement.outerHTML || "";
+          var guarded = /Just a moment|Checking your browser|Attention Required/i.test(String(document.title || "")) ||
+            /cf-challenge|challenge-platform|cf-turnstile|_cf_chl/i.test(markup);
+          if (!guarded && document.querySelector('${readySelector}')) {
+            send({html: markup, error: ""});
+            return;
+          }
+        }
+        if (Date.now() - started > 14500) send({html: "", error: "timeout"});
+      }
+      interval = setInterval(poll, 500);
+      poll();
+    })();`;
+    let result;
+    try {
+      result = await evaluateJavascriptViaWebview(url, {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+      }, [script], 18);
+    } catch (err) {
+      return "";
+    }
+    try {
+      const data = JSON.parse(String(result || ""));
+      return (data && data.html) ? data.html : "";
+    } catch (_) {
+      return "";
+    }
+  }
+
+  // 根因（2026-11-14 实测）：agedm.io 对不带 User-Agent 的请求返回 403，
+  // 带浏览器 UA 才返回 200。扩展的 Client() 默认不发 UA，所以列表/搜索一直是空的。
+  headers() {
+    return {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+    };
+  }
+
   getBaseUrl() {
     const preference = new SharedPreferences();
     var base_url = preference.get("domain_url");
@@ -83,7 +146,7 @@ class DefaultExtension extends MProvider {
       const imageUrl = img.attr("data-original") || img.attr("src") || "";
       if (!name || !link) continue;
       items.push({
-        name: this.stringUTF8(name, true),
+        name: this.fixText(name),
         imageUrl: imageUrl,
         link: link
       });
@@ -92,22 +155,30 @@ class DefaultExtension extends MProvider {
   }
 
   async getPopular(page) {
-    const res = await new Client().get(this.getBaseUrl() + "/");
-    const doc = new Document(res.body);
-    return this.parseVideoItems(doc);
+    const url = this.getBaseUrl() + "/";
+    let res = null;
+    try { res = await new Client().get(url, this.headers()); } catch (e) { res = null; }
+    let result = this.parseVideoItems(new Document(res ? (res.body || "") : ""));
+    if (result.list.length === 0) {
+      const html = await this.loadListViaWebview(url, "div.video_item");
+      if (html) result = this.parseVideoItems(new Document(html));
+    }
+    return result;
   }
 
   async getLatestUpdates(page) {
-    const res = await new Client().get(this.getBaseUrl() + "/update");
-    const doc = new Document(res.body);
-    return this.parseVideoItems(doc);
+    const url = this.getBaseUrl() + "/update";
+    let res = null;
+    try { res = await new Client().get(url, this.headers()); } catch (e) { res = null; }
+    let result = this.parseVideoItems(new Document(res ? (res.body || "") : ""));
+    if (result.list.length === 0) {
+      const html = await this.loadListViaWebview(url, "div.video_item");
+      if (html) result = this.parseVideoItems(new Document(html));
+    }
+    return result;
   }
 
-  async search(query, page, filters) {
-    const res = await new Client().get(
-      this.getBaseUrl() + "/search?query=" + encodeURIComponent(query)
-    );
-    const doc = new Document(res.body);
+  parseSearchItems(doc) {
     const items = [];
     const elements = doc.select("div.card.cata_video_item");
     for (const el of elements) {
@@ -119,7 +190,7 @@ class DefaultExtension extends MProvider {
       const imageUrl = img ? (img.attr("data-original") || img.attr("src") || "") : "";
       if (!name || !link) continue;
       items.push({
-        name: this.stringUTF8(name, true),
+        name: this.fixText(name),
         imageUrl: imageUrl,
         link: link
       });
@@ -127,8 +198,20 @@ class DefaultExtension extends MProvider {
     return { list: items, hasNextPage: false };
   }
 
+  async search(query, page, filters) {
+    const url = this.getBaseUrl() + "/search?query=" + encodeURIComponent(query);
+    let res = null;
+    try { res = await new Client().get(url, this.headers()); } catch (e) { res = null; }
+    let result = this.parseSearchItems(new Document(res ? (res.body || "") : ""));
+    if (result.list.length === 0) {
+      const html = await this.loadListViaWebview(url, "div.card.cata_video_item");
+      if (html) result = this.parseSearchItems(new Document(html));
+    }
+    return result;
+  }
+
   async getDetail(url) {
-    const res = await new Client().get(this.fullUrl(url));
+    const res = await new Client().get(this.fullUrl(url), this.headers());
     const doc = new Document(res.body);
     const titleEl = doc.selectFirst("title");
     let name = titleEl ? (titleEl.text || "") : "";
@@ -136,7 +219,7 @@ class DefaultExtension extends MProvider {
     const cover = doc.selectFirst("img.video_thumbs");
     const imageUrl = cover ? (cover.attr("data-original") || cover.attr("src") || "") : "";
     const meta = doc.selectFirst('meta[name="description"]');
-    const description = meta ? this.stringUTF8(meta.attr("content") || "", true) : "";
+    const description = meta ? this.fixText(meta.attr("content") || "") : "";
     // 只取默认（第一个）播放源的剧集，避免 8 个源重复
     const eps = [];
     const pane = doc.selectFirst("div.tab-pane");
@@ -146,11 +229,11 @@ class DefaultExtension extends MProvider {
         const epName = (a.text || "").trim();
         const epUrl = a.attr("href") || "";
         if (!epName || !epUrl) continue;
-        eps.push({ name: this.stringUTF8(epName, true), url: epUrl });
+        eps.push({ name: this.fixText(epName), url: epUrl });
       }
     }
     return {
-      name: this.stringUTF8(name, true),
+      name: this.fixText(name),
       imageUrl: imageUrl,
       description: description,
       genre: [],
@@ -177,15 +260,32 @@ class DefaultExtension extends MProvider {
         if (interval) clearInterval(interval);
         window.flutter_inappwebview.callHandler("setResponse", JSON.stringify(value));
       }
-      function poll() {
+      function tryPlay() {
+        // v0.0.3 修复：后台 WebView 默认禁自动播放，光等 currentSrc 可能一直是空的；
+        // 每轮都主动触发一次播放（静音 play + 点播放按钮），视频加载后 currentSrc 才有值
         var videos = document.querySelectorAll("video");
         for (var i = 0; i < videos.length; i++) {
-          var src = videos[i].currentSrc || videos[i].src || "";
+          try { videos[i].muted = true; var p = videos[i].play(); if (p && p.catch) p.catch(function(){}); } catch (e) {}
+        }
+        var btns = document.querySelectorAll(".artplayer-play, .art-icon-play, .art-play, .vjs-big-play-button, [class*='play-btn']");
+        for (var j = 0; j < btns.length; j++) {
+          try { btns[j].click(); } catch (e) {}
+        }
+      }
+      function poll() {
+        tryPlay();
+        var videos = document.querySelectorAll("video");
+        for (var i = 0; i < videos.length; i++) {
+          var v = videos[i];
+          var src = v.currentSrc || v.src || "";
           if (!src) continue;
           if (src.indexOf("adposter") !== -1) continue;
           if (src.indexOf("kjjsaas-sh") !== -1) continue;
+          if (src.indexOf("blob:") === 0 || src.indexOf("data:") === 0) continue;
+          var dur = v.duration;
           if (src.indexOf("akamaized.net") !== -1 ||
-              /\.m3u8(\?|$)/.test(src) || /\.mp4(\?|$)/.test(src)) {
+              /\.m3u8(\?|$)/.test(src) || /\.mp4(\?|$)/.test(src) ||
+              (typeof dur === "number" && !isNaN(dur) && dur > 30)) {
             send({url: src, error: ""});
             return;
           }
@@ -212,7 +312,7 @@ class DefaultExtension extends MProvider {
   }
 
   async getVideoList(url) {
-    const res = await new Client().get(this.fullUrl(url));
+    const res = await new Client().get(this.fullUrl(url), this.headers());
     const body = res.body || "";
     const found = [];
     const seen = {};
