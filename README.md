@@ -1,6 +1,6 @@
 # Mangayomi 扩展仓库（Wu 专用）
 
-自己的三个库：漫画 333 个源、动漫 15 个源、小说 5 个源。仓库是公开的，三个地址分别加进 Mangayomi 就能用。
+自己的三个库：漫画 333 个源、动漫 74 个源、小说 5 个源。仓库是公开的，三个地址分别加进 Mangayomi 就能用。
 
 ## 三个仓库地址
 
@@ -14,7 +14,7 @@
 
 `mangayomi://add-repo?repo_name=wu-extensions&repo_url=https://github.com/shuwenLiao/mangayomi-wu-extensions&anime_url=https://raw.githubusercontent.com/shuwenLiao/mangayomi-wu-extensions/main/anime_index.json`
 
-## 动漫（15 个源）
+## 动漫（74 个源：m2k3a 全文 64 个 + 自己写的 10 个独有）
 
 | 源 | 语言 | 内容 | 状态 |
 |---|---|---|---|
