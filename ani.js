@@ -1,13 +1,13 @@
 const mangayomiSources = [{
   "name": "ANi",
   "lang": "zh",
-  "baseUrl": "https://open.ani.rip",
+  "baseUrl": "https://openani.an-i.workers.dev",
   "apiUrl": "",
-  "iconUrl": "https://open.ani.rip/favicon.ico",
+  "iconUrl": "https://openani.an-i.workers.dev/favicon.ico",
   "typeSource": "single",
   "itemType": 1,
   "isNsfw": false,
-  "version": "0.0.3",
+  "version": "0.0.4",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "ani.js"
@@ -22,27 +22,35 @@ const mangayomiSources = [{
 //        <category><![CDATA[<番剧 UUID>]]></category>  ← 同一部番共用一个 UUID，当番剧 id 用
 //      限制：RSS 是固定的一份“最近更新”，约 53 条、52 部番、只覆盖最近一周，
 //      没有分页、没有搜索接口（?page=2、?limit=200 返回同一份）。
-//  (2) 官网全库（v0.0.3 新增，未完全验证，见下）：open.ani.rip 本身是个文件浏览器
+//  (2) 官网全库（v0.0.3 新增，v0.0.4 修正）：官网本身是个文件浏览器
 //      （源码 github.com/RyanL-29/aniopen，Google Drive 式目录），前端用 POST 查全库：
 //        POST <当前目录路径>  body '{"inputvalue":"<关键词>"}'  → 搜索全库，返回 {foldername, files}
 //        POST <当前目录路径>  body '{"password":"<已存密码或null>"}'  → 列目录，返回 {files}
 //      files 每一项是 {name, size, createdTime, mimeType}；搜索时 foldername 可能是数组
 //      （每条文件对应一个目录），普通列表时是字符串；文件夹的 mimeType 是
 //      'application/vnd.google-apps.folder'。
-//      ⚠️ 但 open.ani.rip 被 Cloudflare 互动验证挡着（curl 直接 403 "Just a moment..."），
+//      ⚠️ 官网被 Cloudflare 互动验证挡着（curl 直接 403 "Just a moment..."），
 //      直接 Client 请求拿不到 JSON，只能走内置浏览器（evaluateJavascriptViaWebview）
 //      让真正的浏览器去过验证，再在页内 fetch POST 搜索。能不能过验证、
 //      取决于手机上 WebView 里 Cloudflare 的表现，服务器这边无法验证。
-//      所以 v0.0.3 的策略是：搜索先走 RSS（快）；RSS 一个都找不到时，才试内置浏览器
+//      v0.0.3 的教训（吴 2026-11-14 14:56 实测搜 JOJO 仍是“无结果”）：
+//      它打开的是 https://open.ani.rip/，但吴手机浏览器实际能打开的站是
+//      https://openani.an-i.workers.dev/（Cloudflare Workers 域名，如 /2024-4/ 目录），
+//      而且官网文件本身就放在这个 workers.dev 域名下
+//      （下载地址形如 https://openani.an-i.workers.dev/2024-4/<编码文件名>）。
+//      所以 v0.0.4 改成：内置浏览器直接开 workers.dev 域名搜全库，
+//      搜到的文件地址也拼成 workers.dev 的直链，不再拼 resources.ani.rip。
+//      所以 v0.0.4 的策略是：搜索先走 RSS（快）；RSS 一个都找不到时，才试内置浏览器
 //      搜全库；内置浏览器失败就回落到空结果，不破坏原有功能。
-// 播放：剧集地址是 resources.ani.rip 直链 MP4（1080P，Baha，繁中字幕），
+// 播放：RSS 的剧集地址是 resources.ani.rip 直链 MP4（1080P，Baha，繁中字幕），
 //      固定 301 到 cloud.ani-download.workers.dev（同路径，只换域名），
 //      扩展直接给最终地址 + Referer/UA 头（v0.0.2 已验证能播）。
+//      官网搜到的剧集地址是 openani.an-i.workers.dev 的直链，直接给，不用转。
 // 种子 API（ani-torrent.xml）只有 .torrent 文件，不能原生播，不做。
 
 const ANI_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 const ANI_RSS = "https://api.ani.rip/ani-download.xml";
-const ANI_SITE = "https://open.ani.rip/";
+const ANI_SITE = "https://openani.an-i.workers.dev/";
 
 class DefaultExtension extends MProvider {
   stringUTF8(text, d) {
@@ -171,7 +179,7 @@ class DefaultExtension extends MProvider {
         var input = document.getElementById("searchinput");
         // Cloudflare 挑战页标题是 "Just a moment..."，且没有搜索框；继续等它通过
         if (title.indexOf("Just a moment") !== -1 || !input) {
-          if (Date.now() - started > 25000) send({files: [], foldername: "", error: "challenge"});
+          if (Date.now() - started > 40000) send({files: [], foldername: "", error: "challenge"});
           return;
         }
         // 页面就绪：按官网前端的做法 POST 搜索
@@ -194,7 +202,7 @@ class DefaultExtension extends MProvider {
     })();`;
     let result;
     try {
-      result = await evaluateJavascriptViaWebview(ANI_SITE, this.headers(), [script], 30);
+      result = await evaluateJavascriptViaWebview(ANI_SITE, this.headers(), [script], 45);
     } catch (err) {
       return [];
     }
@@ -209,7 +217,9 @@ class DefaultExtension extends MProvider {
 
   // 把官网搜索返回的 {files, foldername} 转成剧集条目。
   // foldername 可能是字符串（普通列表）或数组（搜索结果，每条文件对应一个目录）。
-  // 文件路径拼成 resources.ani.rip 的直链（RSS 同款格式，播放沿用 v0.0.2 的重定向解析）。
+  // v0.0.4 修正：文件地址拼成 openani.an-i.workers.dev 的直链
+  // （官网文件本身就放在这个域名下，如 /2024-4/<编码文件名>，吴手机浏览器实测能打开），
+  // 不再拼 resources.ani.rip（那是 RSS 新番的域名，老番路径拼上去不一定有）。
   parseWebFiles(files, foldername) {
     const items = [];
     const isArray = Array.isArray(foldername);
@@ -226,7 +236,7 @@ class DefaultExtension extends MProvider {
       if (fullPath.charAt(0) !== "/") fullPath = "/" + fullPath;
       const parsed = this.parseFileTitle(name);
       if (!parsed.animeName) continue;
-      // 路径逐段 percent-encode（和 RSS 里的链接格式一致）
+      // 路径逐段 percent-encode（和官网下载地址的格式一致）
       const encPath = fullPath.split("/").map(function(seg) {
         return encodeURIComponent(seg);
       }).join("/");
@@ -234,7 +244,7 @@ class DefaultExtension extends MProvider {
         animeName: this.fixText(parsed.animeName),
         epNum: parsed.epNum,
         epName: parsed.epNum ? ("第" + parsed.epNum + "集") : name,
-        link: "https://resources.ani.rip" + encPath + "?d=mp4"
+        link: "https://openani.an-i.workers.dev" + encPath
       });
     }
     return items;
@@ -337,15 +347,18 @@ class DefaultExtension extends MProvider {
     };
   }
 
-  // v0.0.2：resources.ani.rip 的直链固定 301 到 cloud.ani-download.workers.dev
-  // （同路径，只换域名），播放器跟重定向不可靠，直接给最终地址；
-  // 另带 Referer + UA 头。
-  // 剧集地址本身就是直链 MP4，直接返回；质量标 1080P（RSS 标题里即是）
+  // v0.0.4：两种直链分开处理。
+  //  (1) RSS 的 resources.ani.rip 直链：固定 301 到 cloud.ani-download.workers.dev，
+  //      扩展直接给最终地址 + Referer/UA 头（v0.0.2 已验证能播）。
+  //  (2) 官网搜到的 openani.an-i.workers.dev 直链：本身就是文件地址，直接给，不用转。
   async getVideoList(url) {
     const u = String(url || "").trim();
     if (!u) return [];
-    const finalUrl = u.replace(/^https:\/\/resources\.ani\.rip\//, "https://cloud.ani-download.workers.dev/");
-    return [{ url: finalUrl, originalUrl: finalUrl, quality: "1080P", headers: { "Referer": "https://open.ani.rip/", "User-Agent": ANI_UA } }];
+    let finalUrl = u;
+    if (u.indexOf("https://resources.ani.rip/") === 0) {
+      finalUrl = u.replace(/^https:\/\/resources\.ani\.rip\//, "https://cloud.ani-download.workers.dev/");
+    }
+    return [{ url: finalUrl, originalUrl: finalUrl, quality: "1080P", headers: { "Referer": "https://openani.an-i.workers.dev/", "User-Agent": ANI_UA } }];
   }
 
   getFilterList() {

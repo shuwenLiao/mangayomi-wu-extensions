@@ -1652,7 +1652,7 @@
   {
     "name": "ANi",
     "id": 1832563116,
-    "baseUrl": "https://open.ani.rip",
+    "baseUrl": "https://openani.an-i.workers.dev",
     "lang": "zh",
     "typeSource": "single",
     "iconUrl": "https://open.ani.rip/favicon.ico",
@@ -1662,7 +1662,7 @@
     "hasCloudflare": false,
     "sourceCodeUrl": "https://raw.githubusercontent.com/shuwenLiao/mangayomi-wu-extensions/main/ani.js",
     "apiUrl": "",
-    "version": "0.0.3",
+    "version": "0.0.4",
     "isManga": false,
     "itemType": 1,
     "isFullData": false,
