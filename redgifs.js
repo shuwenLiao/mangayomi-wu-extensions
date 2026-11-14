@@ -7,7 +7,7 @@ const mangayomiSources = [{
   "typeSource": "single",
   "itemType": 1,
   "isNsfw": true,
-  "version": "0.0.1",
+  "version": "0.0.2",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "redgifs.js"
@@ -46,11 +46,14 @@ class DefaultExtension extends MProvider {
     return null;
   }
 
-  // 带 token 的 API 请求；401 就换一个新 token 再试一次
+  // 带 token 的 API 请求；401 就换一个新 token 再试，最多试 3 次。
+  // token 绑定 IP，手机换网/VPN 换出口都会让旧 token 失效，多试几次能扛住这种切换。
   async apiGet(path) {
     if (!rgToken) await this.fetchToken();
     let res = await new Client().get(this.apiBase() + path, this.headers(true));
-    if (res.statusCode === 401) {
+    let tries = 0;
+    while (res.statusCode === 401 && tries < 3) {
+      tries++;
       rgToken = null;
       await this.fetchToken();
       res = await new Client().get(this.apiBase() + path, this.headers(true));
