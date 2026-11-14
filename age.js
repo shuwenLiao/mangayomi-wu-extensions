@@ -7,7 +7,7 @@ const mangayomiSources = [{
   "typeSource": "single",
   "itemType": 1,
   "isNsfw": false,
-  "version": "0.0.1",
+  "version": "0.0.2",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "age.js"
@@ -158,13 +158,65 @@ class DefaultExtension extends MProvider {
     };
   }
 
+  // 解析器页（jx.wuzhoupai.com 云播放器）在内置浏览器里跑完 JS 后，
+  // ArtPlayer 会把最终直链放到 <video> 上；轮询抓那个地址回来。
+  // 已验证：最终地址是直链 MP4（akamaized.net，无扩展名、无签名），
+  // 不用登录、不用 Referer；但广告贴片（adposter.mp4）和解析失败时
+  // 的兜底错误视频（kjjsaas-sh…mp4，3 秒）要排除掉。
+  async loadParserVideo(parserUrl) {
+    if (typeof evaluateJavascriptViaWebview !== "function") {
+      return "";
+    }
+    const script = String.raw`(function(){
+      if (window.__ageRead) return;
+      window.__ageRead = true;
+      var done = false, started = Date.now(), interval;
+      function send(value) {
+        if (done) return;
+        done = true;
+        if (interval) clearInterval(interval);
+        window.flutter_inappwebview.callHandler("setResponse", JSON.stringify(value));
+      }
+      function poll() {
+        var videos = document.querySelectorAll("video");
+        for (var i = 0; i < videos.length; i++) {
+          var src = videos[i].currentSrc || videos[i].src || "";
+          if (!src) continue;
+          if (src.indexOf("adposter") !== -1) continue;
+          if (src.indexOf("kjjsaas-sh") !== -1) continue;
+          if (src.indexOf("akamaized.net") !== -1 ||
+              /\.m3u8(\?|$)/.test(src) || /\.mp4(\?|$)/.test(src)) {
+            send({url: src, error: ""});
+            return;
+          }
+        }
+        if (Date.now() - started > 17000) send({url: "", error: "timeout"});
+      }
+      interval = setInterval(poll, 500);
+      poll();
+    })();`;
+    let result;
+    try {
+      result = await evaluateJavascriptViaWebview(parserUrl, {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+      }, [script], 20);
+    } catch (err) {
+      return "";
+    }
+    try {
+      const data = JSON.parse(String(result || ""));
+      return (data && data.url) ? data.url : "";
+    } catch (_) {
+      return "";
+    }
+  }
+
   async getVideoList(url) {
     const res = await new Client().get(this.fullUrl(url));
     const body = res.body || "";
     const found = [];
     const seen = {};
-    // 播放页是 JS 动态加载播放地址，静态 HTML 里一般没有直链；
-    // 先按直链模式尽量提取，提不到就返回空（见 README 说明）
+    // 1. 播放页静态 HTML 里有直链就直接用（目前一般没有，留作兜底）
     const patterns = [
       /https?:\/\/[^\s"'\\]+\.m3u8[^\s"'\\]*/g,
       /\/\/[^\s"'\\]+\.m3u8[^\s"'\\]*/g,
@@ -181,7 +233,23 @@ class DefaultExtension extends MProvider {
         }
       }
     }
-    return found;
+    if (found.length > 0) return found;
+    // 2. AGE 播放页内嵌解析器 iframe（jx.wuzhoupai.com/vip/?url=age_<token>），
+    // token 是服务端查表/解密的，静态抓不到直链，也没有可直接调的解析 API
+    // （2026-11-14 浏览器实测：常见候选接口 /vip/api.php、/api/、/vip/api、/jx/ 均为 404）。
+    // 改走内置浏览器：让解析器页跑完 JS，从 <video> 上读最终直链。
+    let parserUrl = "";
+    const iframe = body.match(/<iframe[^>]*src="([^"]*jx\.wuzhoupai[^"]*)"/i);
+    if (iframe) {
+      parserUrl = iframe[1].replace(/&amp;/g, "&");
+    } else {
+      const direct = body.match(/https:\/\/jx\.wuzhoupai\.com:8443\/vip\/\?url=age_[^"'\s&]+/);
+      if (direct) parserUrl = direct[0];
+    }
+    if (!parserUrl) return [];
+    const videoUrl = await this.loadParserVideo(parserUrl);
+    if (!videoUrl) return [];
+    return [{ url: videoUrl, originalUrl: videoUrl, quality: "Origin" }];
   }
 
   getFilterList() {
