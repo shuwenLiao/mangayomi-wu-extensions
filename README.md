@@ -1,6 +1,6 @@
 # Mangayomi 扩展仓库（Wu 专用）
 
-自己的三个库：漫画 333 个源、动漫 74 个源、小说 5 个源。仓库是公开的，三个地址分别加进 Mangayomi 就能用。
+自己的三个库：漫画 333 个源、动漫 78 个源、小说 5 个源。仓库是公开的，三个地址分别加进 Mangayomi 就能用。
 
 ## 三个仓库地址
 
@@ -14,13 +14,17 @@
 
 `mangayomi://add-repo?repo_name=wu-extensions&repo_url=https://github.com/shuwenLiao/mangayomi-wu-extensions&anime_url=https://raw.githubusercontent.com/shuwenLiao/mangayomi-wu-extensions/main/anime_index.json`
 
-## 动漫（74 个源：m2k3a 全文 64 个 + 自己写的 10 个独有）
+## 动漫（78 个源：m2k3a 全文 64 个 + 自己写的 14 个独有）
 
 | 源 | 语言 | 内容 | 状态 |
 |---|---|---|---|
 | AGE动漫 | 中文 | 日漫（agedm.io） | v0.0.4。搜索/详情/剧集已验证，列表已能出结果。**根因已修：agedm.io 对不带 User-Agent 的请求返回 403，扩展现在所有请求都带桌面 Chrome UA**；播放用内置浏览器去解析器页拿直链；v0.0.4 加强了播放触发（解析器在手机上默认不自动播放，每轮主动点播放器+调 play，超时放宽到 28 秒）；列表页静态拿不到时自动走内置浏览器兜底；名字乱码已修。**播放仍需手机实测** |
 | DM84 | 中文 | 日漫（动漫巴士，dmbus.cc） | v0.0.1 新加。搜索/详情/剧集实测通过（JOJO 搜到 6 部，剧集 38 集）；播放页只嵌解析器 iframe（hhjx.hhplayer.com），用内置浏览器拿直链（带播放触发）；列表页静态拿不到时自动走内置浏览器兜底。**仍需手机实测** |
 | aafun | 中文 | 日漫（月之祠，moonci.com） | v0.0.1 新加。搜索/详情/剧集实测通过（JOJO 搜到 8 部，剧集 26 话）；播放链路：播放页 player_aaaa 解出下一跳播放页（next.xifanacg.com），再抓直链，抓不到用内置浏览器拿。**下一跳站从服务器打不开，手机上能不能打开是关键，仍需手机实测** |
+| giriGiriLove | 中文 | 日漫（ani.girigirilove.com） | v0.0.1 新加。**纯 JSON API，直链 m3u8**（akua.girigirilove.com，播放列表+分片都验证过 HTTP 200）；搜索/详情/剧集全部实测通过（JOJO 搜到 8 部，飙马野郎 9 集）；繁/简两条线路，扩展优先简体字幕。不用解析器、不用 WebView |
+| ANi | 中文 | 日漫（open.ani.rip，当季新番） | v0.0.1 新加。**Resources Core RSS 直链 MP4**（1080P，Baha，繁中字幕，HEAD 验证过 video/mp4）；搜索/详情/剧集全部实测通过（RSS 52 部番）。**限制：RSS 只覆盖最近一周的更新，没有分页和搜索接口，老番搜不到**（比如 JOJO 不在 feed 里）；看当季新番够用 |
+| FQDM | 中文 | 日漫（番茄动漫，fqdm.cc） | v0.0.1 新加。**player_aaaa 明文直链 m3u8**（xluuss/hn.bfvvs，AES-128 HLS，播放列表验证过 HTTP 200）；搜索/详情/剧集全部实测通过（JOJO 搜到 16 部，飙马野郎 8 集）。不用解析器、不用 WebView |
+| LMM | 中文 | 日漫（路漫漫，lmm22.com） | v0.0.1 新加。搜索/详情/剧集实测通过（JOJO 搜到 6 部，飙马野郎 9 集）；播放走 yunbox 解析器（yun.92cj.com），需带 Referer，用内置浏览器拿直链。**播放需手机实测** |
 | MX动漫 | 中文 | 日漫（dcc3.com） | 全部验证通过，播放页直接有 m3u8 |
 | 七色番 | 中文 | 日漫（7sefun.top） | 搜索/详情/剧集已验证；播放地址要解码跳转，最后一跳没验证 |
 | 红果短剧 | 中文 | 竖屏短剧（hongguoduanju.com） | 搜索/浏览/详情/分集全部实测通过；**每部剧只有前面几集（一般 5 集）能播，后面的集是红果付费墙，公开地址 404，扩展拿不到**；画质只有 360p；想看全集用桐溪观影厅（合集版）或电脑上的红果桌面端 |
@@ -34,7 +38,7 @@
 | KissKH | 英文 | 韩剧、日剧、泰剧、中剧 | m2k3a 原版，直接引用 |
 | Wiflix | 法文 | 法国电影+剧集 | m2k3a 原版，直接引用 |
 
-AGE、MX动漫、七色番、DM84、aafun 是新写的 JS 扩展（照 m2k3a 的樱花动漫扩展格式），规则来自 Kazumi 的 Predidit/KazumiRules（XPath 选择器 + 站点地址已实测）。另外 5 个是 m2k3a 仓库里现成的，index 里直接引用原地址，不用重复写。
+AGE、MX动漫、七色番、DM84、aafun、giriGiriLove、ANi、FQDM、LMM 是新写的 JS 扩展（照 m2k3a 的樱花动漫扩展格式），规则来自 Kazumi 的 Predidit/KazumiRules（XPath 选择器 + 站点地址已实测）。另外 5 个是 m2k3a 仓库里现成的，index 里直接引用原地址，不用重复写。
 
 ## 漫画（333 个源，全文照搬 m2k3a）
 
