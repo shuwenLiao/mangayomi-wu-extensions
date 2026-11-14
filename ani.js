@@ -232,6 +232,8 @@ class DefaultExtension extends MProvider {
       let dir = "";
       if (isArray) dir = String(foldername[i] || "");
       else dir = String(foldername || "");
+      // foldername 末尾不一定带 "/"，缺了就补一个再拼文件名（否则拼出 /2024-4[ANi]... 这种错地址）
+      if (dir && dir.charAt(dir.length - 1) !== "/") dir += "/";
       let fullPath = (dir || "") + name;
       if (fullPath.charAt(0) !== "/") fullPath = "/" + fullPath;
       const parsed = this.parseFileTitle(name);
