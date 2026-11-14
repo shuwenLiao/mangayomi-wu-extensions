@@ -7,7 +7,7 @@ const mangayomiSources = [{
   "typeSource": "single",
   "itemType": 1,
   "isNsfw": false,
-  "version": "0.0.3",
+  "version": "0.0.4",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "age.js"
@@ -246,6 +246,9 @@ class DefaultExtension extends MProvider {
   // 已验证：最终地址是直链 MP4（akamaized.net，无扩展名、无签名），
   // 不用登录、不用 Referer；但广告贴片（adposter.mp4）和解析失败时
   // 的兜底错误视频（kjjsaas-sh…mp4，3 秒）要排除掉。
+  // v0.0.4：解析器页在手机 UA 下 Autoplay=false（它按 UA 判断，含 Android
+  // 就不自动播放），光等 currentSrc 可能一直是空的；改成每轮主动触发播放，
+  // 并把超时从 17 秒放宽到 28 秒（解析器解密+加载经常超过 17 秒）。
   async loadParserVideo(parserUrl) {
     if (typeof evaluateJavascriptViaWebview !== "function") {
       return "";
@@ -261,16 +264,26 @@ class DefaultExtension extends MProvider {
         window.flutter_inappwebview.callHandler("setResponse", JSON.stringify(value));
       }
       function tryPlay() {
-        // v0.0.3 修复：后台 WebView 默认禁自动播放，光等 currentSrc 可能一直是空的；
-        // 每轮都主动触发一次播放（静音 play + 点播放按钮），视频加载后 currentSrc 才有值
+        // 每轮都主动触发一次播放：静音 play + 点播放按钮 + 点播放器容器本身
         var videos = document.querySelectorAll("video");
         for (var i = 0; i < videos.length; i++) {
           try { videos[i].muted = true; var p = videos[i].play(); if (p && p.catch) p.catch(function(){}); } catch (e) {}
+          try { videos[i].click(); } catch (e) {}
         }
-        var btns = document.querySelectorAll(".artplayer-play, .art-icon-play, .art-play, .vjs-big-play-button, [class*='play-btn']");
+        var btns = document.querySelectorAll(".artplayer-play, .art-icon-play, .art-play, .artplayer-video-play, .vjs-big-play-button, [class*='play-btn'], .artplayer");
         for (var j = 0; j < btns.length; j++) {
           try { btns[j].click(); } catch (e) {}
         }
+        // ArtPlayer 实例如果挂在 window 上，直接调它的 play
+        try {
+          var ap = window.artplayer || (window.__artplayer) || null;
+          if (ap && ap.play) { ap.muted = true; ap.play(); }
+        } catch (e) {}
+        // 有些播放器要先点掉加载/封面层
+        try {
+          var cov = document.querySelector(".artplayer-poster, .artplayer-loading, #loading .mov");
+          if (cov) cov.click();
+        } catch (e) {}
       }
       function poll() {
         tryPlay();
@@ -278,6 +291,10 @@ class DefaultExtension extends MProvider {
         for (var i = 0; i < videos.length; i++) {
           var v = videos[i];
           var src = v.currentSrc || v.src || "";
+          if (!src) {
+            var s = v.querySelector("source");
+            if (s) src = s.src || "";
+          }
           if (!src) continue;
           if (src.indexOf("adposter") !== -1) continue;
           if (src.indexOf("kjjsaas-sh") !== -1) continue;
@@ -290,7 +307,13 @@ class DefaultExtension extends MProvider {
             return;
           }
         }
-        if (Date.now() - started > 17000) send({url: "", error: "timeout"});
+        // 解析器出错时会显示 #error；一直停在 #loading 说明还没跑完，继续等
+        var errEl = document.querySelector("#error");
+        if (errEl && errEl.offsetParent !== null && errEl.innerText && errEl.innerText.trim()) {
+          send({url: "", error: "parser-error"});
+          return;
+        }
+        if (Date.now() - started > 28000) send({url: "", error: "timeout"});
       }
       interval = setInterval(poll, 500);
       poll();
@@ -299,7 +322,7 @@ class DefaultExtension extends MProvider {
     try {
       result = await evaluateJavascriptViaWebview(parserUrl, {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-      }, [script], 20);
+      }, [script], 32);
     } catch (err) {
       return "";
     }
