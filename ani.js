@@ -7,7 +7,7 @@ const mangayomiSources = [{
   "typeSource": "single",
   "itemType": 1,
   "isNsfw": false,
-  "version": "0.0.1",
+  "version": "0.0.2",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "ani.js"
@@ -167,11 +167,15 @@ class DefaultExtension extends MProvider {
     };
   }
 
+  // v0.0.2：resources.ani.rip 的直链固定 301 到 cloud.ani-download.workers.dev
+  // （同路径，只换域名），播放器跟重定向不可靠，直接给最终地址；
+  // 另带 Referer + UA 头。
   // 剧集地址本身就是直链 MP4，直接返回；质量标 1080P（RSS 标题里即是）
   async getVideoList(url) {
     const u = String(url || "").trim();
     if (!u) return [];
-    return [{ url: u, originalUrl: u, quality: "1080P" }];
+    const finalUrl = u.replace(/^https:\/\/resources\.ani\.rip\//, "https://cloud.ani-download.workers.dev/");
+    return [{ url: finalUrl, originalUrl: finalUrl, quality: "1080P", headers: { "Referer": "https://open.ani.rip/", "User-Agent": ANI_UA } }];
   }
 
   getFilterList() {

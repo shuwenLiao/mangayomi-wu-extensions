@@ -22,8 +22,8 @@
 | DM84 | 中文 | 日漫（动漫巴士，dmbus.cc） | v0.0.1 新加。搜索/详情/剧集实测通过（JOJO 搜到 6 部，剧集 38 集）；播放页只嵌解析器 iframe（hhjx.hhplayer.com），用内置浏览器拿直链（带播放触发）；列表页静态拿不到时自动走内置浏览器兜底。**仍需手机实测** |
 | aafun | 中文 | 日漫（月之祠，moonci.com） | v0.0.1 新加。搜索/详情/剧集实测通过（JOJO 搜到 8 部，剧集 26 话）；播放链路：播放页 player_aaaa 解出下一跳播放页（next.xifanacg.com），再抓直链，抓不到用内置浏览器拿。**下一跳站从服务器打不开，手机上能不能打开是关键，仍需手机实测** |
 | giriGiriLove | 中文 | 日漫（ani.girigirilove.com） | v0.0.1 新加。**纯 JSON API，直链 m3u8**（akua.girigirilove.com，播放列表+分片都验证过 HTTP 200）；搜索/详情/剧集全部实测通过（JOJO 搜到 8 部，飙马野郎 9 集）；繁/简两条线路，扩展优先简体字幕。不用解析器、不用 WebView |
-| ANi | 中文 | 日漫（open.ani.rip，当季新番） | v0.0.1 新加。**Resources Core RSS 直链 MP4**（1080P，Baha，繁中字幕，HEAD 验证过 video/mp4）；搜索/详情/剧集全部实测通过（RSS 52 部番）。**限制：RSS 只覆盖最近一周的更新，没有分页和搜索接口，老番搜不到**（比如 JOJO 不在 feed 里）；看当季新番够用 |
-| FQDM | 中文 | 日漫（番茄动漫，fqdm.cc） | v0.0.1 新加。**player_aaaa 明文直链 m3u8**（xluuss/hn.bfvvs，AES-128 HLS，播放列表验证过 HTTP 200）；搜索/详情/剧集全部实测通过（JOJO 搜到 16 部，飙马野郎 8 集）。不用解析器、不用 WebView |
+| ANi | 中文 | 日漫（open.ani.rip，当季新番） | v0.0.2。**Resources Core RSS 直链 MP4**（1080P，Baha，繁中字幕）；搜索/详情/剧集全部实测通过（RSS 52 部番）。**v0.0.2：直链固定 301 到 cloud.ani-download.workers.dev，扩展直接给最终地址 + Referer/UA 头。限制：RSS 只覆盖最近一周的更新，没有分页和搜索接口，老番搜不到**（比如 JOJO 不在 feed 里）；看当季新番够用 |
+| FQDM | 中文 | 日漫（番茄动漫，fqdm.cc） | v0.0.2。**player_aaaa 明文直链 m3u8**（xluuss/hn.bfvvs，AES-128 HLS）；搜索/详情/剧集全部实测通过（JOJO 搜到 16 部，飙马野郎 8 集）。**注意：分片 CDN 用非标准端口（线路2/3 是 g.xlzyd.com:9999，线路1 是 hnts.ymuuy.com:65），手机网络可能拦端口导致播不出；v0.0.2 返回全部线路（各标线路号）+ Referer/UA 头，播不动就换一条线再试** |
 | LMM | 中文 | 日漫（路漫漫，lmm22.com） | v0.0.1 新加。搜索/详情/剧集实测通过（JOJO 搜到 6 部，飙马野郎 9 集）；播放走 yunbox 解析器（yun.92cj.com），需带 Referer，用内置浏览器拿直链。**播放需手机实测** |
 | MX动漫 | 中文 | 日漫（dcc3.com） | 全部验证通过，播放页直接有 m3u8 |
 | 七色番 | 中文 | 日漫（7sefun.top） | 搜索/详情/剧集已验证；播放地址要解码跳转，最后一跳没验证 |

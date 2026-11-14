@@ -7,7 +7,7 @@ const mangayomiSources = [{
   "typeSource": "single",
   "itemType": 1,
   "isNsfw": false,
-  "version": "0.0.1",
+  "version": "0.0.2",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "fqdm.js"
@@ -271,38 +271,72 @@ class DefaultExtension extends MProvider {
     }
   }
 
+  // v0.0.2：FQDM 的分片 CDN 用非标准端口（线路2/3 是 g.xlzyd.com:9999，
+  // 线路1 是 hnts.ymuuy.com:65），手机网络可能拦端口导致“转不出来”；
+  // 改成返回全部线路的 m3u8（各标线路号），播不动就换一条线再试。
+  // 每个视频都带 Referer + UA 头（MVideo.headers），播放器请求分片时带上。
   async getVideoList(url) {
-    const res = await new Client().get(this.fullUrl(url), this.headers());
-    const body = res.body || "";
-    // 1) 静态直链（播放页里直接嵌的 m3u8/mp4）
-    const found = [];
+    const epUrl = this.fullUrl(url);
+    const headers = { "Referer": "https://www.fqdm.cc/", "User-Agent": FQDM_UA };
+    const videos = [];
     const seen = {};
-    const patterns = [
-      /https?:\/\/[^\s"'\\]+\.m3u8[^\s"'\\]*/g,
-      /\/\/[^\s"'\\]+\.m3u8[^\s"'\\]*/g,
-      /https?:\/\/[^\s"'\\]+\.mp4[^\s"'\\]*/g
-    ];
-    for (const pat of patterns) {
-      let m;
-      while ((m = pat.exec(body)) !== null) {
-        let u = m[0];
-        if (u.indexOf("//") === 0) u = "https:" + u;
-        if (!seen[u]) { seen[u] = true; found.push({ url: u, originalUrl: u, quality: "Origin" }); }
+    const addVideo = (u, quality) => {
+      if (!u || seen[u]) return;
+      seen[u] = true;
+      videos.push({ url: u, originalUrl: u, quality: quality, headers: headers });
+    };
+    const m = /\/vod\/play\/id\/(\d+)\/sid\/(\d+)\/nid\/(\d+)\.html/.exec(epUrl);
+    const mySid = m ? m[2] : "";
+    // 1) 本集自己的播放页
+    let body = "";
+    try {
+      const res = await new Client().get(epUrl, this.headers());
+      body = res.body || "";
+      const purl = this.extractPlayerUrl(body);
+      if (purl) addVideo(purl, mySid ? ("线路" + mySid) : "线路");
+    } catch (_) {}
+    // 2) 详情页里找同集（同 nid）在其他线路的播放页
+    if (m) {
+      const vid = m[1], nid = m[3];
+      try {
+        const dres = await new Client().get(this.base() + "/index.php/vod/detail/id/" + vid + ".html", this.headers());
+        const dhtml = dres.body || "";
+        const lists = dhtml.match(/<div class="module-play-list-content[^"]*">[\s\S]*?<\/div>/gi) || [];
+        for (const lst of lists) {
+          const re = new RegExp('<a[^>]*href="([^"]*\\/vod\\/play\\/id\\/' + vid + '\\/sid\\/(\\d+)\\/nid\\/' + nid + '\\.html)"', "i");
+          const lm = re.exec(lst);
+          if (!lm) continue;
+          const sid = lm[2];
+          if (sid === mySid) continue;
+          const playUrl = this.fullUrl(lm[1]);
+          try {
+            const pres = await new Client().get(playUrl, this.headers());
+            const pu = this.extractPlayerUrl(pres.body || "");
+            if (pu) addVideo(pu, "线路" + sid);
+          } catch (_) {}
+        }
+      } catch (_) {}
+    }
+    // 3) 静态直链兜底（播放页里直接嵌的 m3u8/mp4）
+    if (videos.length === 0 && body) {
+      const patterns = [
+        /https?:\/\/[^\s"'\\]+\.m3u8[^\s"'\\]*/g,
+        /https?:\/\/[^\s"'\\]+\.mp4[^\s"'\\]*/g
+      ];
+      for (const pat of patterns) {
+        let mm;
+        while ((mm = pat.exec(body)) !== null) addVideo(mm[0], "直链");
       }
     }
-    if (found.length > 0) return found;
-    // 2) player_aaaa 的 url（encrypt=0 是明文直链 m3u8）
-    const purl = this.extractPlayerUrl(body);
-    if (purl && (purl.indexOf(".m3u8") !== -1 || purl.indexOf(".mp4") !== -1 || purl.indexOf("http") === 0)) {
-      return [{ url: purl, originalUrl: purl, quality: "Origin" }];
+    // 4) 解析器 iframe，走内置浏览器
+    if (videos.length === 0 && body) {
+      const iframe = body.match(/<iframe[^>]*src="([^"]+)"/i);
+      if (iframe && iframe[1]) {
+        const videoUrl = await this.loadParserVideo(iframe[1].replace(/&amp;/g, "&"));
+        if (videoUrl) addVideo(videoUrl, "解析");
+      }
     }
-    // 3) 解析器 iframe，走内置浏览器
-    const iframe = body.match(/<iframe[^>]*src="([^"]+)"/i);
-    if (iframe && iframe[1]) {
-      const videoUrl = await this.loadParserVideo(iframe[1].replace(/&amp;/g, "&"));
-      if (videoUrl) return [{ url: videoUrl, originalUrl: videoUrl, quality: "Origin" }];
-    }
-    return [];
+    return videos;
   }
 
   getFilterList() {
