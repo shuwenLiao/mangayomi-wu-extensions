@@ -7,13 +7,32 @@ const mangayomiSources = [{
 "typeSource": "single",
 "itemType": 1,
 "isNsfw": false,
-"version": "0.0.3",
+"version": "0.0.4",
 "dateFormat": "",
 "dateFormatLocale": "",
 "pkgPath": "seasonal.js"
 }];
 
-// 新番导视 v0.0.3（本季新番资讯指南 + PV + 按季度翻）。
+// 新番导视 v0.0.4（本季新番资讯指南 + PV + 按季度翻）。
+// v0.0.4 修复（吴手机实测 2026-11-15：2026夏季榜单评分虚高，三个 10.0 一个 9.9）：
+// 往季列表原来只用 giriGiriLove 的 vod_score，它家打分特别水，动不动就 10.0。
+// 现在往季取 Bangumi 搜索评分当主评分：bgmSearchScore() 按番名调 Bangumi 搜索接口
+// （/search/subject/?type=2&responseGroup=large），拿它的 rating.score/total/rank。
+// 同一个评分体系，本季（Bangumi 日历）和往季（Bangumi 搜索）就对得上了，
+// 2026夏季前 10 从 10.0/10.0/10.0/9.9/9.8 变成 8.1/8.0/7.5/7.1/7.0/6.8/6.6/6.4/5.9/5.9。
+// 为什么不用 MAL/Jikan（原计划）：实测 Jikan api.jikan.moe 从服务器连不上——
+// TLS 握手完成、证书都拿到了，服务器直接回空响应（Cloudflare/机房 IP 被拦），
+// 任务要求的"服务器先验证 Jikan 返回 200 + 3 个标题有分"这关过不了，没法在服务器上
+// 验证标题匹配，硬上就是未经验证的代码。Kitsu 也试了，搜中文名返回 0 条。
+// Bangumi 搜索是已验证的路子（7/7 个标题都命中正确的番，含翻译变体），
+// 而且是扩展本来就在用的接口（search() 就是调它），所以历史评分就用 Bangumi。
+// 匹配规则：先全名搜，没结果再把副标题截掉重搜（"死神 千年血战篇-祸进谭-"→"死神 千年血战篇"）；
+// 取前 3 条里和原番名最像的一条（normName 最长公共子串），公共片段 >= 2 字才收——
+// 翻译变体必须放行（描绘直至生命尽头→画完这个再去死，公共片段只有"这个"2 字），
+// 太严会把正确的番筛掉，宁可信 Bangumi 搜索的排序，也不要把正确的评分漏掉。
+// 性能：往季列表只给按点击量前 20 名取 Bangumi 评分（每批 5 个并行，批间 150ms），
+// 20 条约 4 秒；剩下 40 条按点击量排，评分标"站内 X分"（说明是站方自己的分，不可信）。
+// 详情页（ggl 番）也调一次 Bangumi 搜索拿分，主评分显示 Bangumi 分，站内分做参考。
 // v0.0.3 修复（吴手机实测 2026-11-15：PV 有了但点开一直转圈 00:00 播不了；
 // 炒翻天 的 PV 是错的——月亮计划十周年，和这部料理番没关系）：
 // (1) getVideoList 返回的每个视频都带 headers（Referer: https://www.bilibili.com/ + 桌面 UA），
@@ -343,6 +362,91 @@ return (parseInt(b.vod_hits || 0, 10) - parseInt(a.vod_hits || 0, 10));
 return rows;
 }
 
+// ---- 往季历史评分：Bangumi 搜索（v0.0.4，替代虚高的 giriGiriLove 分） ----
+// 番名副标题截断："死神 千年血战篇-祸进谭-"→"死神 千年血战篇"，
+// "虽然我不是完美恶女～雏宫蝶鼠替换传～"→"虽然我不是完美恶女"。只截 -/～/~/：/:/—/– 后面的部分，
+// 第X季/第三季这种季标记不动（续集区分全靠它）。
+shortenQuery(name) {
+const s = String(name || "").trim();
+const cut = s.split(/[-～~：:—–]/)[0].trim();
+return cut || s;
+}
+
+// 按番名查 Bangumi 评分（搜索接口，responseGroup=large 才带 rating）。
+// 返回 {id, nameCn, name, score, total, rank} 或 null（没命中/没评分/请求失败）。
+// 匹配：先全名搜，没结果再用截短名搜；前 3 条里挑和原番名最像的一条
+// （normName 最长公共子串，>= 2 字才收——翻译变体如 描绘直至生命尽头→画完这个再去死
+// 公共片段只有"这个"2 字，太严会把正确的番筛掉）。结果（含 null）都进内存缓存，
+// 同一趟列表不重复查；缓存挂在 this 上（Mangayomi 每次调用可能新建实例，跨调用不保证命中）。
+async bgmSearchScore(name) {
+const key = this.normName(name);
+if (!key) return null;
+if (!this._bgmScoreCache) this._bgmScoreCache = {};
+if (Object.prototype.hasOwnProperty.call(this._bgmScoreCache, key)) return this._bgmScoreCache[key];
+let best = null;
+let bestLcs = -1;
+const queries = [String(name || "").trim()];
+const short = this.shortenQuery(name);
+if (short && short !== queries[0]) queries.push(short);
+for (const q of queries) {
+let list = [];
+try {
+const res = await new Client().get(BGM_API + "/search/subject/" + encodeURIComponent(q) + "?type=2&responseGroup=large&max_results=3", this.headers());
+const data = JSON.parse(res.body || "");
+list = (data && data.list) || [];
+} catch (_) { list = []; }
+for (const s of list) {
+if (!s || !s.id) continue;
+const candName = ((s.name_cn || "") + " " + (s.name || "")).trim();
+const lcs = this.lcsLen(key, this.normName(candName));
+const contains = key.indexOf(this.normName(candName)) >= 0 || this.normName(candName).indexOf(key) >= 0;
+const score = contains? Math.max(lcs, 99): lcs;
+if (score > bestLcs) { bestLcs = score; best = s; }
+}
+if (best) break;
+}
+let out = null;
+if (best && bestLcs >= 2) {
+const r = best.rating || {};
+out = {
+id: String(best.id),
+nameCn: String(best.name_cn || best.name || ""),
+name: String(best.name || ""),
+score: (r.score !== null && r.score !== undefined)? parseFloat(r.score): null,
+total: (r.total !== null && r.total !== undefined)? parseInt(r.total, 10): null,
+rank: (best.rank !== null && best.rank !== undefined)? parseInt(best.rank, 10): null
+};
+if (out.score === null || isNaN(out.score)) out = null;
+}
+this._bgmScoreCache[key] = out;
+return out;
+}
+
+// 往季列表评分修正：按点击量取前 count 名，批量查 Bangumi 评分挂到 row._bgm 上，
+// 再按"可信 Bangumi 评分（>=50 票）降序，没评分的按点击量"重排整张表。
+// 每批 5 个并行，批间 150ms——20 条约 4 秒；剩下没取分的行保持原样（站内分）。
+async enrichGGLRows(rows, count) {
+const n = count || 20;
+const byHits = [...rows].sort((a, b) => (parseInt(b.vod_hits || 0, 10) - parseInt(a.vod_hits || 0, 10)));
+const top = byHits.slice(0, n);
+for (let i = 0; i < top.length; i += 5) {
+const batch = top.slice(i, i + 5);
+await Promise.all(batch.map(async (r) => {
+try { r._bgm = await this.bgmSearchScore(String(r.vod_name || "")); }
+catch (_) { r._bgm = null; }
+}));
+if (i + 5 < top.length) await new Promise(res => setTimeout(res, 150));
+}
+rows.sort((a, b) => {
+const ra = a._bgm, rb = b._bgm;
+const sa = (ra && ra.score !== null && ra.total !== null && ra.total >= 50)? ra.score: -1;
+const sb = (rb && rb.score !== null && rb.total !== null && rb.total >= 50)? rb.score: -1;
+if (sb !== sa) return sb - sa;
+return (parseInt(b.vod_hits || 0, 10) - parseInt(a.vod_hits || 0, 10));
+});
+return rows;
+}
+
 matchGGL(index, show) {
 if (!index) return null;
 const a = this.normTitle(show.name_cn || "");
@@ -365,14 +469,24 @@ link: "bgm:" + String(show.id || "")
 };
 }
 
-// 往季列表项（giriGiriLove 行）：类型只靠标题启发式，评分用 giriGiriLove 分
+// 往季列表项（giriGiriLove 行）：类型只靠标题启发式。
+// v0.0.4：主评分是 Bangumi 搜索分（可信，和本季同一体系）；站内分只做参考放括号里。
+// 没取到 Bangumi 分的行：只显示"站内 X分"，明确说明这是站方自己的分（虚高，不可信）。
 toGGLItem(row) {
 const name = String(row.vod_name || "").trim();
 const t = this.titleType(name);
 const label = t? (""): "";
-const score = parseFloat(row.vod_score || 0);
+const gglScore = parseFloat(row.vod_score || 0);
+const bgm = row._bgm || null;
+let suffix = "";
+if (bgm && bgm.score !== null && !isNaN(bgm.score)) {
+suffix = " Bangumi " + bgm.score.toFixed(1) + "分";
+if (gglScore && !isNaN(gglScore) && Math.abs(gglScore - bgm.score) >= 0.5) suffix += "（站内 " + gglScore.toFixed(1) + "分）";
+} else if (gglScore && !isNaN(gglScore)) {
+suffix = " 站内 " + gglScore.toFixed(1) + "分";
+}
 return {
-name: label + name + ((score &&!isNaN(score))? (" " + score.toFixed(1) + "分"): ""),
+name: label + name + suffix,
 imageUrl: String(row.vod_pic || ""),
 link: "ggl:" + String(row.vod_id || "")
 };
@@ -587,6 +701,7 @@ if (items.length >= 60) break;
 return { list: items, hasNextPage: false};
 }
 const rows = await this.fetchGGLQuarter(q.year, q.area);
+await this.enrichGGLRows(rows, 20);
 const items = [];
 for (const r of rows) {
 items.push(this.toGGLItem(r));
@@ -606,8 +721,9 @@ const today = shows.filter(s => s.air_weekday === bgmDay);
 today.sort((a, b) => (((b.collection && b.collection.doing) || 0) - ((a.collection && a.collection.doing) || 0)));
 return { list: today.map(s => this.toItem(s, null, false)), hasNextPage: false};
 }
-// 往季没有"今天更新"，最新 = 该季度按评分排
+// 往季没有"今天更新"，最新 = 该季度按 Bangumi 评分排（同 getPopular 的修正逻辑）
 const rows = await this.fetchGGLQuarter(q.year, q.area);
+await this.enrichGGLRows(rows, 20);
 return { list: rows.slice(0, 60).map(r => this.toGGLItem(r)), hasNextPage: false};
 }
 
@@ -645,15 +761,26 @@ if (!info) return { name: "", imageUrl: "", description: "", genre: [], status: 
 const name = String(info.vod_name || "").trim();
 const primary = this.titleType(name) || "新番";
 const score = parseFloat(info.vod_score || 0);
+// v0.0.4：详情页也查一次 Bangumi 评分当主评分（站内分虚高，只做参考）
+let bgm = null;
+try { bgm = await this.bgmSearchScore(name); } catch (_) { bgm = null; }
 const lines = [];
-lines.push("类型：" + primary + "（往季只有 giriGiriLove 数据，类型只靠标题判断，没有 Bangumi 评分/排名）");
-if (score) lines.push("giriGiriLove " + score.toFixed(1) + "分" + (info.vod_hits? (" · " + info.vod_hits + "次点击"): "") + (info.vod_remarks? (" · " + String(info.vod_remarks)): ""));
+lines.push("类型：" + primary + "（往季类型只靠标题判断）");
+if (bgm && bgm.score !== null) {
+let dl = "Bangumi " + bgm.score.toFixed(1) + "分";
+if (bgm.total !== null) dl += "（" + bgm.total + "人评分）";
+if (bgm.rank !== null) dl += " · 总排名第" + bgm.rank + "位";
+lines.push(dl);
+lines.push(this.verdict(bgm.score, bgm.total, null));
+}
+if (score) lines.push("站内分（仅供参考，偏高）：" + "giriGiriLove " + score.toFixed(1) + "分" + (info.vod_hits? (" · " + info.vod_hits + "次点击"): "") + (info.vod_remarks? (" · " + String(info.vod_remarks)): ""));
 lines.push("简介：" + String(info.vod_content || info.vod_blurb || "").replace(/<[^>]+>/g, "").trim());
 lines.push("选集里是本番的 PV（B站搜的），点开后先试直接播，播不了就点播放器里的内置浏览器看。");
-const pvs = await this.fetchBiliPVs(name, "", []);
+const pvs = await this.fetchBiliPVs(name, bgm ? bgm.name : "", []);
 const newsParts = [];
 if (info.vod_remarks) newsParts.push(String(info.vod_remarks));
-if (score) newsParts.push("giriGiriLove " + score.toFixed(1) + "分");
+if (bgm && bgm.score !== null) newsParts.push("Bangumi " + bgm.score.toFixed(1) + "分" + (bgm.total !== null? ("（" + bgm.total + "人评分）"): ""));
+else if (score) newsParts.push("giriGiriLove " + score.toFixed(1) + "分");
 if (info.vod_hits) newsParts.push(info.vod_hits + "次点击");
 const introText = String(info.vod_content || info.vod_blurb || "").replace(/<[^>]+>/g, "").trim();
 return { name: "" + name, imageUrl: String(info.vod_pic || ""), description: lines.join("\n"), genre: [], status: 3, episodes: this.episodesFor(pvs, { sourceLine: this.sourceLineText(primary, "", "", name), intro: introText, newsLine: newsParts.join(" · ") })};
