@@ -1,6 +1,6 @@
 # Mangayomi 扩展仓库（Wu 专用）
 
-自己的三个库：漫画 343 个源、动漫 78 个源、小说 5 个源。仓库是公开的，三个地址分别加进 Mangayomi 就能用。
+自己的三个库：漫画 344 个源、动漫 79 个源、小说 5 个源。仓库是公开的，三个地址分别加进 Mangayomi 就能用。
 
 ## 三个仓库地址
 
@@ -14,10 +14,11 @@
 
 `mangayomi://add-repo?repo_name=wu-extensions&repo_url=https://github.com/shuwenLiao/mangayomi-wu-extensions&anime_url=https://raw.githubusercontent.com/shuwenLiao/mangayomi-wu-extensions/main/anime_index.json`
 
-## 动漫（78 个源：m2k3a 全文 64 个 + 自己写的 14 个独有）
+## 动漫（79 个源：m2k3a 全文 64 个 + 自己写的 15 个独有）
 
 | 源 | 语言 | 内容 | 状态 |
 |---|---|---|---|
+| 新番导视 | 中文 | 本季新番导视（资讯，不是视频源） | v0.0.1 新加。Bangumi 日历 API（本季 112 部）+ giriGiriLove 评分/简介/更新状态；每部番标类型【漫画改编/续集/重制/原创】，按 Bangumi 评分排序，带一句话推荐。**纯资讯：点开只有推荐和介绍，不放视频**；数据实时，比泛式的导视视频出得早。**待手机实测** |
 | AGE动漫 | 中文 | 日漫（agedm.io） | v0.0.4。搜索/详情/剧集已验证，列表已能出结果。**根因已修：agedm.io 对不带 User-Agent 的请求返回 403，扩展现在所有请求都带桌面 Chrome UA**；播放用内置浏览器去解析器页拿直链；v0.0.4 加强了播放触发（解析器在手机上默认不自动播放，每轮主动点播放器+调 play，超时放宽到 28 秒）；列表页静态拿不到时自动走内置浏览器兜底；名字乱码已修。**播放仍需手机实测** |
 | DM84 | 中文 | 日漫（动漫巴士，dmbus.cc） | v0.0.1 新加。搜索/详情/剧集实测通过（JOJO 搜到 6 部，剧集 38 集）；播放页只嵌解析器 iframe（hhjx.hhplayer.com），用内置浏览器拿直链（带播放触发）；列表页静态拿不到时自动走内置浏览器兜底。**仍需手机实测** |
 | aafun | 中文 | 日漫（月之祠，moonci.com） | v0.0.1 新加。搜索/详情/剧集实测通过（JOJO 搜到 8 部，剧集 26 话）；播放链路：播放页 player_aaaa 解出下一跳播放页（next.xifanacg.com），再抓直链，抓不到用内置浏览器拿。**下一跳站从服务器打不开，手机上能不能打开是关键，仍需手机实测** |
@@ -38,14 +39,15 @@
 | KissKH | 英文 | 韩剧、日剧、泰剧、中剧 | m2k3a 原版，直接引用 |
 | Wiflix | 法文 | 法国电影+剧集 | m2k3a 原版，直接引用 |
 
-AGE、MX动漫、七色番、DM84、aafun、giriGiriLove、ANi、FQDM、LMM 是新写的 JS 扩展（照 m2k3a 的樱花动漫扩展格式），规则来自 Kazumi 的 Predidit/KazumiRules（XPath 选择器 + 站点地址已实测）。另外 5 个是 m2k3a 仓库里现成的，index 里直接引用原地址，不用重复写。
+AGE、MX动漫、七色番、DM84、aafun、giriGiriLove、ANi、FQDM、LMM、新番导视是新写的 JS 扩展（照 m2k3a 的樱花动漫扩展格式），规则来自 Kazumi 的 Predidit/KazumiRules（XPath 选择器 + 站点地址已实测）。另外 5 个是 m2k3a 仓库里现成的，index 里直接引用原地址，不用重复写。
 
-## 漫画（343 个源：m2k3a 333 + 自写 10）
+## 漫画（344 个源：m2k3a 333 + 自写 10 + 漫画排行榜 1）
 
-`manga_index.json` 是 m2k3a 漫画索引的全文复制（335 条里有 2 条是完全相同的重复条目，已去掉，剩 333 个源），再加 10 个按 Yokai 列表自写的中文漫画源。中文和日文的源都在里面：
+`manga_index.json` 是 m2k3a 漫画索引的全文复制（335 条里有 2 条是完全相同的重复条目，已去掉，剩 333 个源），再加 10 个按 Yokai 列表自写的中文漫画源，又加 1 个自写的漫画排行榜。另外，Kodjo 官方漫画库里独有的 43 条（41 条 Comick 语言版本 + Mangapill + ReadComicOnline）已在本地备好合并（本地 387 条），等吴确认后再传，线上现在还是 344 条。
 
 | 源 | 语言 | 内容 |
 |---|---|---|
+| 漫画排行榜 | 中文 | 漫画柜排行榜（日/周/月/总榜） |
 | 动漫之家 | 中文 | dmzj.com |
 | 拷贝漫画 | 中文 | mangacopy.com |
 | 新新漫画 | 中文 | 77mh.xyz |
