@@ -7,7 +7,7 @@ const mangayomiSources = [{
   "typeSource": "single",
   "itemType": 0,
   "isNsfw": false,
-  "version": "0.0.1",
+  "version": "0.0.2",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "mangarank.js"
@@ -23,6 +23,18 @@ const mangayomiSources = [{
 //   排行榜页本身没有封面，但封面地址可由漫画 id 直接拼出来：
 //   https://cf.mhgui.com/cpic/h/{comic_id}.jpg（已验证 /comic/7580/ 的封面就是这个格式）。
 //   列表名字前加名次（"1. 一拳超人"），一眼看到排名。
+// v0.0.2 备用链（2026-11-15：吴的手机上漫画柜一直被拦，榜单空白）：
+//   getRankList 按顺序试：①漫画柜直连 → ②拷贝漫画排行榜
+//   （https://www.mangacopy.com/rank，日榜；周/月/总榜是
+//   /rank?type=male&table=week|month|total，四者 2026-11-15 均实测 HTTP 200，
+//   每页 50 部，行结构 <li class="col-4">，名次在 .ranking-all-icon，
+//   链接是 /comic/{slug}，封面在 img.lazyload 的 data-src，
+//   热度在火焰图标后如 1660.1W）→ ③内置浏览器加载漫画柜排行页。
+//   哪一级备用榜出了数据，只在第一条名字前标注来源（【拷贝漫画】/
+//   【漫画柜·浏览器】），其余条目不变。备用榜条目的 link 是拷贝漫画的
+//   /comic/{slug}，getDetail 有专门分支：读标题/封面/状态，不展开章节目录，
+//   说明去「拷贝漫画」源搜同名看正文（拷贝漫画详情页是 JS 空壳，章节目录
+//   不在静态 HTML 里）。漫画柜直连的条目仍走原来的 getDetail。
 // 排行榜类型切换：来源设置里的"排行榜类型"（日/周/月/总，默认总排行），
 //   浏览页的筛选器也能切（search 空关键词时按筛选器的类型返回对应榜单）。
 // 详情/章节：详情页用 Document 选择器取标题/封面/简介/作者/状态；章节目录按
@@ -140,11 +152,8 @@ class DefaultExtension extends MProvider {
     return "total";
   }
 
-  // 排行榜表格：每行 <tr> 里取 名次 / 漫画链接 / 名字 / 评分 / 更新时间
-  async getRankList(type) {
-    const url = this.getBaseUrl() + this.rankUrl(type);
-    const res = await new Client().get(url, this.headers());
-    const body = res.body || "";
+  // 漫画柜排行榜表格：每行 <tr> 里取 名次 / 漫画链接 / 名字 / 评分
+  parseManhuaguiRank(body) {
     const items = [];
     const rowRe = /<tr>([\s\S]*?)<\/tr>/g;
     let m;
@@ -165,7 +174,141 @@ class DefaultExtension extends MProvider {
         link: link
       });
     }
-    return { list: items, hasNextPage: false };
+    return items;
+  }
+
+  async fetchManhuaguiRank(type) {
+    const url = this.getBaseUrl() + this.rankUrl(type);
+    const res = await new Client().get(url, this.headers());
+    return this.parseManhuaguiRank(res.body || "");
+  }
+
+  // 拷贝漫画排行榜地址：日榜是 /rank；周/月/总榜是查询参数（路径 /rank/week 等是 404）
+  copyRankUrl(type) {
+    if (type === "week") return "/rank?type=male&table=week";
+    if (type === "month") return "/rank?type=male&table=month";
+    if (type === "total") return "/rank?type=male&table=total";
+    return "/rank";
+  }
+
+  // 拷贝漫画排行行：<li class="col-4">，名次在 .ranking-all-icon，
+  // 链接 /comic/{slug}，标题在 p.threeLines 的 title 属性，封面在
+  // img.lazyload 的 data-src，热度在火焰图标后（如 1660.1W）
+  parseCopyRank(body) {
+    const items = [];
+    const rowRe = /<li class="col-4">([\s\S]*?)<\/li>/g;
+    let m;
+    while ((m = rowRe.exec(body)) !== null) {
+      const row = m[1];
+      const rankM = row.match(/ranking-all-icon[^>]*>(\d+)</);
+      const linkM = row.match(/href="(\/comic\/[a-z0-9_-]+)"/i);
+      if (!rankM || !linkM) continue;
+      const rank = rankM[1];
+      const link = linkM[1];
+      let name = "";
+      const titleM = row.match(/<p class="threeLines"[^>]*title="([^"]+)"/);
+      if (titleM) name = titleM[1].trim();
+      if (!name) {
+        const textM = row.match(/<p class="threeLines"[^>]*>([^<]+)<\/p>/);
+        if (textM) name = textM[1].trim();
+      }
+      if (!name) continue;
+      let cover = "";
+      const imgM = row.match(/<img[^>]*data-src="([^"]+)"/);
+      if (imgM) cover = imgM[1];
+      if (!cover) {
+        const srcM = row.match(/<img[^>]*src="(https:[^"]+)"/);
+        if (srcM) cover = srcM[1];
+      }
+      const heatM = row.match(/flameIcon allIcon"><\/span>([^<]+)</);
+      const heat = heatM ? heatM[1].trim() : "";
+      items.push({
+        name: rank + ". " + name + (heat ? "（" + heat + "）" : ""),
+        imageUrl: cover,
+        link: link
+      });
+    }
+    return items;
+  }
+
+  async fetchCopyRank(type) {
+    const url = "https://www.mangacopy.com" + this.copyRankUrl(type);
+    const res = await new Client().get(url, {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36",
+      "Referer": "https://www.mangacopy.com/"
+    });
+    return this.parseCopyRank(res.body || "");
+  }
+
+  // 内置浏览器加载漫画柜排行页（最后手段）：等 td.rank-no 出现就把整页 HTML
+  // 交回来解析；验证页/超时返回空串。沿用 pimpbunny.js 的写法。
+  async loadManhuaguiViaWebview(type) {
+    if (typeof evaluateJavascriptViaWebview !== "function") return "";
+    const url = this.getBaseUrl() + this.rankUrl(type);
+    const script = String.raw`(function(){
+      if (window.__mrRead) return;
+      window.__mrRead = true;
+      var done = false, started = Date.now(), interval;
+      function send(value) {
+        if (done) return;
+        done = true;
+        if (interval) clearInterval(interval);
+        window.flutter_inappwebview.callHandler("setResponse", JSON.stringify(value));
+      }
+      function poll() {
+        var body = document.body;
+        if (body) {
+          var title = String(document.title || "");
+          var markup = document.documentElement.outerHTML || "";
+          var guarded = /Just a moment|Checking your browser|Attention Required|安全驗證|請稍候/i.test(title) ||
+            /cf-challenge|challenge-platform|cf-turnstile|_cf_chl/i.test(markup);
+          if (!guarded && document.querySelector('td.rank-no')) {
+            send({html: markup, error: ""});
+            return;
+          }
+        }
+        if (Date.now() - started > 14500) send({html: "", error: "verification_or_page_timeout"});
+      }
+      interval = setInterval(poll, 500);
+      poll();
+    })();`;
+    let result;
+    try {
+      result = await evaluateJavascriptViaWebview(url, this.headers(), [script], 18);
+    } catch (_) {
+      return "";
+    }
+    let data;
+    try { data = JSON.parse(String(result || "")); } catch (_) { return ""; }
+    if (!data || !data.html) return "";
+    return data.html;
+  }
+
+  // 排行榜备用链：漫画柜直连 → 拷贝漫画 → 内置浏览器加载漫画柜。
+  // 哪一级出了数据就用哪一级；备用榜只在第一条名字前标注来源。
+  async getRankList(type) {
+    try {
+      const items = await this.fetchManhuaguiRank(type);
+      if (items.length > 0) return { list: items, hasNextPage: false };
+    } catch (_) {}
+    try {
+      const items = await this.fetchCopyRank(type);
+      if (items.length > 0) {
+        items[0].name = "【拷贝漫画】" + items[0].name;
+        return { list: items, hasNextPage: false };
+      }
+    } catch (_) {}
+    try {
+      const html = await this.loadManhuaguiViaWebview(type);
+      if (html) {
+        const items = this.parseManhuaguiRank(html);
+        if (items.length > 0) {
+          items[0].name = "【漫画柜·浏览器】" + items[0].name;
+          return { list: items, hasNextPage: false };
+        }
+      }
+    } catch (_) {}
+    return { list: [], hasNextPage: false };
   }
 
   async getPopular(page) {
@@ -226,6 +369,11 @@ class DefaultExtension extends MProvider {
   }
 
   async getDetail(url) {
+    // 备用榜（拷贝漫画）的条目是 /comic/{slug}，不是漫画柜的数字 id：
+    // 走拷贝漫画详情分支，只读标题/封面/状态，不展开章节目录。
+    if (/^\/comic\/[a-z][a-z0-9_-]*$/i.test(url)) {
+      return await this.getCopyDetail(url);
+    }
     const res = await new Client().get(this.getBaseUrl() + url, this.headers());
     const doc = new Document(res.body);
     const title = doc.selectFirst("div.book-title h1").text;
@@ -283,6 +431,52 @@ class DefaultExtension extends MProvider {
       status: status,
       episodes: eps,
       chapters: eps
+    };
+  }
+
+  // 拷贝漫画详情页是 15KB 左右的 JS 空壳：标题在 <h6>，封面在 img.lazyload
+  // 的 data-src，章节目录不在静态 HTML 里（只有“開始閱讀”一个链接）。
+  // 所以只返回标题/封面/状态/类型，章节列表为空，说明去「拷贝漫画」源
+  // 搜同名看正文。
+  async getCopyDetail(url) {
+    const res = await new Client().get("https://www.mangacopy.com" + url, {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36",
+      "Referer": "https://www.mangacopy.com/"
+    });
+    const body = res.body || "";
+    let name = "";
+    const h6M = body.match(/<h6[^>]*>([^<]+)<\/h6>/);
+    if (h6M) name = h6M[1].trim();
+    if (!name) {
+      const tM = body.match(/<title>\s*([^\-<]+)/);
+      if (tM) name = tM[1].trim();
+    }
+    let cover = "";
+    const imgM = body.match(/<img[^>]*data-src="(https:[^"]+cover[^"]*)"/);
+    if (imgM) cover = imgM[1];
+    const titleTag = body.match(/<title>([\s\S]*?)<\/title>/);
+    const titleText = titleTag ? titleTag[1].replace(/\s+/g, " ").trim() : "";
+    const genres = [];
+    const genreM = titleText.match(/-(連載中|已完結)-([^-\n]+)-在线阅读/);
+    if (genreM) {
+      for (const g of genreM[2].split(",")) {
+        const gg = g.trim();
+        if (gg) genres.push(gg);
+      }
+    }
+    const status = /已完結/.test(titleText) ? 1 : 0;
+    const latestM = titleText.match(/第(\d+)话/);
+    return {
+      name: name || url,
+      imageUrl: cover,
+      description: "【拷贝漫画榜单】本条来自拷贝漫画排行榜（漫画柜被拦时的备用榜）。"
+        + (latestM ? "最新第" + latestM[1] + "话。" : "")
+        + "章节目录是拷贝漫画 JS 动态加载的，本源不展开；读正文请去「拷贝漫画」源搜同名漫画。",
+      genre: genres,
+      author: "",
+      status: status,
+      episodes: [],
+      chapters: []
     };
   }
 
