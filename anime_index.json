@@ -1714,5 +1714,27 @@
     "additionalParams": "",
     "sourceCodeLanguage": 1,
     "notes": "路漫漫动漫；列表/搜索/详情静态，播放走 yunbox 解析器 WebView，需手机实测"
+  },
+  {
+    "name": "新番导视",
+    "id": 4147149546,
+    "baseUrl": "https://bgm.tv",
+    "lang": "zh",
+    "typeSource": "single",
+    "iconUrl": "https://bgm.tv/img/favicon.ico",
+    "dateFormat": "",
+    "dateFormatLocale": "",
+    "isNsfw": false,
+    "hasCloudflare": false,
+    "sourceCodeUrl": "https://raw.githubusercontent.com/shuwenLiao/mangayomi-wu-extensions/main/seasonal.js",
+    "apiUrl": "",
+    "version": "0.0.1",
+    "isManga": false,
+    "itemType": 1,
+    "isFullData": false,
+    "appMinVerReq": "0.5.0",
+    "additionalParams": "",
+    "sourceCodeLanguage": 1,
+    "notes": ""
   }
 ]
