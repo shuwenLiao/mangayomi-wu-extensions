@@ -7,13 +7,26 @@ const mangayomiSources = [{
 "typeSource": "single",
 "itemType": 1,
 "isNsfw": false,
-"version": "0.0.2",
+"version": "0.0.3",
 "dateFormat": "",
 "dateFormatLocale": "",
 "pkgPath": "seasonal.js"
 }];
 
-// 新番导视 v0.0.2（本季新番资讯指南 + PV + 按季度翻）。
+// 新番导视 v0.0.3（本季新番资讯指南 + PV + 按季度翻）。
+// v0.0.3 修复（吴手机实测 2026-11-15：PV 有了但点开一直转圈 00:00 播不了；
+// 炒翻天 的 PV 是错的——月亮计划十周年，和这部料理番没关系）：
+// (1) getVideoList 返回的每个视频都带 headers（Referer: https://www.bilibili.com/ + 桌面 UA），
+// B站直链（durl/dash）没有 Referer 会被 CDN 拒掉，播放器就一直转圈；
+// 直链和页地址两条路都带 headers（fqdm.js v0.0.2 就是这么带 MVideo.headers 的）。
+// 注意：页地址那条（B站视频页）本身不是视频流，headers 也救不了它，点开还是得用播放器里的
+// 内置浏览器按钮看；headers 修复针对的是直链那条路。直链提没提到、提到了播不播得了，
+// 只有吴手机能验证，服务器这边 B站页返回 412 测不出来。
+// (2) PV 相关性收紧：视频标题必须和番名沾边（番名/别名完整出现，或与番名有 3 字以上公共片段，
+// 或作者名含番名），否则不要——宁可没有 PV（回落到文字项），也不要放错的 PV。
+// 炒翻天 的教训：B站搜 "炒翻天 PV" 前几条是月亮计划十周年（只因含 pv 二字），
+// 旧版只看 PV 信号不看名字，就把错的放进来了。正确那条【2026年】炒翻天 先导PV 排在第 8，
+// 旧版取满 3 条就停了，根本没扫到它；新版相关性过滤会把错的筛掉，继续往下扫到正确的。
 // 数据：Bangumi 日历 API（本季）+ giriGiriLove（往季 + 评分/简介/更新状态）。
 // 季度筛选：带年份+季节（2026年秋季/夏季/春季/冬季，2025年秋季……），默认当前季度。
 // 1月=冬季、4月=春季、7月=夏季、10月=秋季。内部映射到 vod_area（一月/四月/七月/十月）+ vod_year。
@@ -101,6 +114,12 @@ const SEASON_BY_MONTH = {
 class DefaultExtension extends MProvider {
 headers() {
 return { "User-Agent": BGM_UA, "Accept": "application/json, text/html, */*"};
+}
+
+// B站请求头：直链和视频页都要带 Referer（B站 CDN 没 Referer 就拒掉，播放器转圈播不了）
+// + 桌面 UA。只用于 B站（WebView 提直链、getVideoList 返回的视频项），不用于 Bangumi/giriGiriLove。
+biliHeaders() {
+return { "Referer": "https://www.bilibili.com/", "User-Agent": BGM_UA };
 }
 
 t2s(s) {
@@ -359,6 +378,76 @@ link: "ggl:" + String(row.vod_id || "")
 };
 }
 
+// ---- PV 相关性（v0.0.3：标题必须和番名沾边，否则不要） ----
+// 名字串归一化：繁→简，去标点空格，小写（和 normTitle 同一套路，但不过滤"第X季"）。
+normName(s) {
+let t = this.t2s(String(s || ""));
+t = t.replace(/[^\w\u4e00-\u9fff\u3040-\u30ff]/g, "");
+return t.toLowerCase();
+}
+
+// 最长公共子串长度（字符级）。标题和番名都是短串，O(m*n) 够用。
+lcsLen(a, b) {
+const m = a.length, n = b.length;
+if (!m || !n) return 0;
+let prev = new Array(n + 1).fill(0);
+let best = 0;
+for (let i = 1; i <= m; i++) {
+const cur = new Array(n + 1).fill(0);
+for (let j = 1; j <= n; j++) {
+if (a[i - 1] === b[j - 1]) {
+cur[j] = prev[j - 1] + 1;
+if (cur[j] > best) best = cur[j];
+}
+}
+prev = cur;
+}
+return best;
+}
+
+// 标题/作者是否和番名相关。nameStrs = [中文名，日文名，别名...]（已去重，短于 2 字的不要）。
+// 通过条件（任一）：
+// (a) 标题含完整番名/别名（例：【2026年】炒翻天 先导PV 含"炒翻天"）；
+// (b) 标题与任一名字串的最长公共子串 >= 3 字（长名字才用，短名字必须完整出现防误判；
+// 例：脑洞学生会 vs 学生会也有洞，公共片段"学生会" 3 字，通过）；
+// (c) 作者名含番名/别名（上传者就是以番名命名的账号，近似"官方账号"）。
+// 不通过例：月亮计划十周年新pv vs 炒翻天——标题、作者和番名/别名没有任何公共片段，筛掉。
+// 注意：没有用"作者含官方"当通过条件——很多不相干的官方账号也会含"官方"二字，
+// 光凭这个放行会把错的 PV 漏进来；作者必须含番名才算。
+isRelevant(title, author, nameStrs) {
+const t = this.normName(title);
+const a = this.normName(author);
+if (!t) return false;
+for (const raw of (nameStrs || [])) {
+const n = this.normName(raw);
+if (!n || n.length < 2) continue;
+if (t.indexOf(n) >= 0) return true;
+if (n.length > 3 && this.lcsLen(t, n) >= 3) return true;
+if (a && a.indexOf(n) >= 0) return true;
+}
+return false;
+}
+
+// Bangumi infobox 别名 → 字符串数组。别名可能是 [{v:"铁锅料理王"},...]、字符串或字符串数组，
+// 都归一成字符串数组；只取 CJK/罗马字别名（不做翻译），供 PV 相关性判断用。
+aliasesFromInfobox(infobox) {
+const out = [];
+try {
+for (const e of (infobox || [])) {
+if (e.key !== "别名") continue;
+const v = e.value;
+if (typeof v === "string") { if (v.trim()) out.push(v.trim()); }
+else if (Array.isArray(v)) {
+for (const it of v) {
+if (typeof it === "string") { if (it.trim()) out.push(it.trim()); }
+else if (it && typeof it.v === "string" && it.v.trim()) out.push(it.v.trim());
+}
+}
+}
+} catch (_) {}
+return out;
+}
+
 // ---- PV（B站） ----
 // 标题是不是 PV：先排除分集/合集/OP/ED/作画集锦/先行图，再看有没有 PV 信号。
 // 强信号：PV/预告/特报/ティザー/先导PV/正式PV/第X弹/特別PV/特别PV/本PV/Trailer。
@@ -373,10 +462,22 @@ return /先行/i.test(t);
 }
 
 // B站搜 PV：番名 + " PV"，没有强信号的再搜 " 预告"；每番最多 3 条，去重。
-async fetchBiliPVs(nameCn, name) {
-const queries = [];
+// v0.0.3：aliases 是 Bangumi infobox 别名（例：炒翻天 的"铁锅料理王"），只用来做相关性判断，
+// 不单独拿去搜（实测搜别名会返回一堆不相干的视频，例如搜"铁锅料理王 PV"全是做菜视频）。
+// 每条候选必须同时通过 isPVTitle（有 PV 信号、无分集特征）和 isRelevant（标题/作者和番名沾边），
+// 否则跳过继续往下扫——不要取满 3 条就停在错的上面（炒翻天 的正确 PV 排第 8，错的三条排第 4-6）。
+// 扫完所有查询、所有层级后仍不足 1 条就返回空，调用方回落到文字项，不编造、不放错的 PV。
+async fetchBiliPVs(nameCn, name, aliases) {
+const nameStrs = [];
 const n1 = String(nameCn || "").trim();
 const n2 = String(name || "").trim();
+if (n1) nameStrs.push(n1);
+if (n2 && n2!== n1) nameStrs.push(n2);
+for (const al of (aliases || [])) {
+const a = String(al || "").trim();
+if (a && a!== n1 && a!== n2) nameStrs.push(a);
+}
+const queries = [];
 if (n1) queries.push(n1 + " PV");
 if (n2 && n2!== n1) queries.push(n2 + " PV");
 if (n1) queries.push(n1 + " 预告");
@@ -402,6 +503,7 @@ const bvid = String(v.bvid || "");
 if (!bvid || seen[bvid]) continue;
 const title = String(v.title || "").replace(/<[^>]+>/g, "");
 if (!this.isPVTitle(title, tier)) continue;
+if (!this.isRelevant(title, String(v.author || ""), nameStrs)) continue;
 seen[bvid] = true;
 found.push({ bvid: bvid, title: title, author: String(v.author || ""), pageUrl: "https://www.bilibili.com/video/" + bvid});
 }
@@ -416,7 +518,7 @@ async extractBiliDirect(pageUrl) {
 if (typeof evaluateJavascriptViaWebview!== "function") return null;
 const script = "(function(){var tries=0;var timer=setInterval(function(){tries++;var direct=null;try{var pi=window.__playinfo__;if(pi&&pi.data){var durl=pi.data.durl;if(durl&&durl.length&&durl[0].url){direct=durl[0].url;}else if(pi.data.dash&&pi.data.dash.video&&pi.data.dash.video.length){var vs=pi.data.dash.video.slice().sort(function(a,b){return (b.bandwidth||0)-(a.bandwidth||0);});direct=vs[0].baseUrl||vs[0].base_url||null;}}}catch(e){}if(direct||tries>24){clearInterval(timer);window.flutter_inappwebview.callHandler(\"setResponse\",JSON.stringify({direct:direct}));}},500);})()";
 try {
-const raw = await evaluateJavascriptViaWebview(pageUrl, this.headers(), script, 20);
+const raw = await evaluateJavascriptViaWebview(pageUrl, this.biliHeaders(), script, 20);
 const d = JSON.parse(raw || "{}");
 if (d && d.direct) return String(d.direct);
 } catch (_) {}
@@ -548,7 +650,7 @@ lines.push("类型：" + primary + "（往季只有 giriGiriLove 数据，类型
 if (score) lines.push("giriGiriLove " + score.toFixed(1) + "分" + (info.vod_hits? (" · " + info.vod_hits + "次点击"): "") + (info.vod_remarks? (" · " + String(info.vod_remarks)): ""));
 lines.push("简介：" + String(info.vod_content || info.vod_blurb || "").replace(/<[^>]+>/g, "").trim());
 lines.push("选集里是本番的 PV（B站搜的），点开后先试直接播，播不了就点播放器里的内置浏览器看。");
-const pvs = await this.fetchBiliPVs(name, "");
+const pvs = await this.fetchBiliPVs(name, "", []);
 const newsParts = [];
 if (info.vod_remarks) newsParts.push(String(info.vod_remarks));
 if (score) newsParts.push("giriGiriLove " + score.toFixed(1) + "分");
@@ -645,7 +747,8 @@ if (genre.indexOf(gn) < 0) genre.push(gn);
 if (genre.length >= 8) break;
 }
 } catch (_) {}
-const pvs = await this.fetchBiliPVs(nameCn, subj.name || "");
+const aliases = this.aliasesFromInfobox(subj.infobox || []);
+const pvs = await this.fetchBiliPVs(nameCn, subj.name || "", aliases);
 let yuanzuo = "";
 try {
 const ib2 = {};
@@ -668,17 +771,21 @@ episodes: this.episodesFor(pvs, { sourceLine: srcLine, intro: intro, newsLine: n
 }
 
 // PV 播放：首选 WebView 提直链（原生播）；提不到就返回 B站视频页（内置浏览器看）。
+// v0.0.3：返回的每个视频都带 headers（Referer: https://www.bilibili.com/ + 桌面 UA）——
+// B站直链没有 Referer 会被 CDN 拒掉，播放器一直转圈 00:00 播不了（吴手机实测 2026-11-15）。
+// 页地址那条也带 headers（无害；它本身不是视频流，点开还是得用播放器里的内置浏览器按钮看）。
 // 注意：服务器 B站页返回 412，直链提取在服务器上测不出来，只能在手机上验证。
 async getVideoList(url) {
 const pageUrl = String(url || "").trim();
 if (!pageUrl) return [];
 // 文字项（改编来源/官方简介/最新动态）：没有视频，返回空，不报错、不给假链接
 if (pageUrl.indexOf("text:") === 0) return [];
+const headers = this.biliHeaders();
 const direct = await this.extractBiliDirect(pageUrl);
 if (direct) {
-return [{ url: direct, quality: "PV直链", originalUrl: pageUrl}];
+return [{ url: direct, quality: "PV直链", originalUrl: pageUrl, headers: headers}];
 }
-return [{ url: pageUrl, quality: "PV · 内置浏览器", originalUrl: pageUrl}];
+return [{ url: pageUrl, quality: "PV · 内置浏览器", originalUrl: pageUrl, headers: headers}];
 }
 
 getFilterList() {
