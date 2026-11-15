@@ -7,20 +7,47 @@ const mangayomiSources = [{
 "typeSource": "single",
 "itemType": 1,
 "isNsfw": false,
-"version": "0.0.1",
+"version": "0.0.2",
 "dateFormat": "",
 "dateFormatLocale": "",
 "pkgPath": "seasonal.js"
 }];
 
-// 新番导视（本季新番资讯指南，只做资讯、不放视频）。
-// 数据全部实时取自公开 API，新番一上架就能看到，比等导视视频更快：
-// Bangumi 日历：GET https://api.bgm.tv/calendar
-// → 7 个 weekday 对象，各 {weekday:{cn}, items:[{id, name, name_cn, rating:{score,total}, rank, summary, images:{large}, air_date, air_weekday}]}
-/// 本季 2026 Q4 共 112 部，99 部有评分。无须鉴权，但要带 UA，否则 403。
-// giriGiriLove：GET https://m3u8.girigirilove.com/api.php/Vod/get_list?vod_name=&offset=0&limit=100
-// → {info:{total:3797, rows:[{vod_id, vod_name, vod_pic, vod_score, vod_hits, vod_blurb, vod_remarks, vod_area, vod_year}]}}
-// vod_area + vod_year 是季度（本季：十月 2026），前 100 条里已有全部 63 部本季番。
+// 新番导视 v0.0.2（本季新番资讯指南 + PV + 按季度翻）。
+// 数据：Bangumi 日历 API（本季）+ giriGiriLove（往季 + 评分/简介/更新状态）。
+// 季度筛选：带年份+季节（2026年秋季/夏季/春季/冬季，2025年秋季……），默认当前季度。
+// 1月=冬季、4月=春季、7月=夏季、10月=秋季。内部映射到 vod_area（一月/四月/七月/十月）+ vod_year。
+// 本季走 Bangumi 日历（有评分/排名）；往季走 giriGiriLove get_list 按 vod_area+vod_year 服务端筛选
+// （实测：七月 2026 共 66 部，四月 2026 共 71 部，一月 2026 共 66 部，十月 2025 共 58 部），按 vod_score 排序。
+// 往季只有 giriGiriLove 数据，没有 Bangumi 评分/排名，类型只靠标题启发式（续集/重制）。
+// 选集 = PV：每个番的详情页选集里是它的 PV（B站找的），不再是空的。
+// 为什么用 B站找 PV、不用番剧官网：实测 学生会也有洞 官网 https://nama-anaru.com/
+// （首页和 /movie、/pv、/special、/trailer）没有直接 mp4、没有 YouTube/B站嵌入、没有 <video> 标签。
+// 官网本身不托管视频文件，PV 只是嵌 B站/YouTube 播放器或跳链接，走官网拿不到直链反而多一跳。
+// B站才是视频实际所在的地方，而且 B站搜索 API 是通的（实测 HTTP 200）。
+// 个别番官网确实有直接 mp4 时可作补充，但不以官网为主。
+// PV 播放（吴要求"能直接播"）：
+// 首选原生播放：getVideoList 先用 evaluateJavascriptViaWebview 打开 B站视频页，
+// 从 window.__playinfo__ 里提直链（durl 或 dash 最高码率），提到了就返回直链，播放器直接播。
+// 兜底：提不到（B站拦了内置浏览器、或页面没 __playinfo__）就返回 B站视频页地址，
+// 点开后用播放器里的内置浏览器按钮看。
+// 注意：服务器这边 B站 view 接口和视频页都返回 412（疑似机房 IP 被拦），手机 IP 未必被拦，
+// 所以 WebView 提取在手机上可能行得通——不要因为服务器 412 就放弃这条路，
+// 但在没手机实测前不要声称能直接播。
+// B站搜索 API：GET https://api.bilibili.com/x/web-interface/search/all/v2?keyword=<番名>+PV
+// → data.result 里 result_type=video 的 data 数组，各 {bvid, title, author, play}。
+// 搜到的不全是 PV（有分集、OP/ED、合集），过滤规则见 isPVTitle：
+// 强 PV 信号（PV/预告/特报/ティザー/先导PV/正式PV/第X弹/特別PV/本PV/Trailer）且不含分集特征才算；
+// 实在没有强信号时再放宽到含"先行"但不含分集特征的；再没有就返回空，不编造 PV。
+// 资讯帖（吴要求：导视要像小黑盒/微博那样的资讯 APP，详情页像一篇资讯帖）：
+// 选集位置不空着：有 PV 就放 PV；没有 PV 就放文字项（信息写在选集项名字里，点开没有视频，
+// getVideoList 对文字项返回 []，不报错、不返回假链接）。
+// 文字项三类：改编来源（漫画《XXX》/轻小说/原创/续集/重制，详情里显眼标出）、
+// 官方简介（简介摘录）、最新动态（更新集数/播出星期/评分）。
+// 贴图：详情封面用 Bangumi images.large（或 giriGiriLove vod_pic）。
+// 注意：Bangumi v0 详情的 images 只有同一张封面的不同尺寸（small/grid/large/medium/common），
+// 没有别的海报/角色图；Mangayomi 详情页也只有一个 imageUrl 位置放不下多图，
+// 所以封面就是详情里能带的图，角色图/海报不在接口里，带不上。
 // 类型标注（每部番必须标出类型，用户在列表一眼区分）：
 // 续集 / 重制：标题启发式（第X季/第二季/第三季/S2/S3/第X期/续篇；重制/Remake），运行时判断，任何季度都适用。
 // 漫画改编 / 轻小说改编 / 游戏改编 / 小说改编 / 原创：
@@ -32,11 +59,11 @@ const mangayomiSources = [{
 // 开头一句按 Bangumi 评分给的 verdict（>=8.0 本季值得追 / 7-8 可看 / 6-7 观望 / <6 谨慎 / 无评分 暂无评分），
 // 再给简介 + 数据行（Bangumi 分 / 评分人数 / 本季排名 / giriGiriLove 分 / 点击 / 更新集数 / 播出星期）。
 // 所有数字都来自接口实测，不编造、不引用泛式的原话。
-// 注意：这是资讯源，getVideoList 永远返回 []，点开只有介绍、没有播放。
 
 const BGM_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 const BGM_API = "https://api.bgm.tv";
 const GG_API = "https://m3u8.girigirilove.com/api.php/Vod";
+const BILI_API = "https://api.bilibili.com/x/web-interface/search/all/v2";
 // 本季：只留 2026-09-01 之后开播的番。Bangumi 日历含航海王（1999）、柯南（1996）
 // 这种长寿番，不过滤的话它们会按评分霸占导视榜首。
 const SEASON_FROM = "2026-09-01";
@@ -46,22 +73,30 @@ const T2S = "偵侦備备傭佣僕仆別别劇剧動动問问場场師师強强�
 
 // 类型快照（2026-11-15 实测 Bangumi v0 详情生成，112 部；M=漫画改编 L=轻小说改编 G=游戏改编 N=小说改编 O=原创 A=改编）。
 const TYPE_MAP = {
-  "899":"M","975":"M","390200":"O","393010":"L","412008":"M","418229":"L","449346":"O","456078":"L",
-  "471844":"M","486456":"L","498559":"O","499474":"M","502123":"M","505550":"O","507820":"N","511936":"M",
-  "513878":"G","536270":"L","537738":"L","538631":"O","541538":"G","542007":"M","544378":"O","548156":"M",
-  "551304":"L","554779":"M","555605":"M","559080":"M","563508":"M","567896":"M","568244":"L","568525":"M",
-  "573707":"O","576783":"M","577237":"L","584847":"M","586255":"M","589775":"M","590553":"O","593565":"M",
-  "593863":"O","596771":"L","605533":"M","606716":"M","613256":"L","614640":"M","616808":"L","617273":"M",
-  "617948":"M","621073":"M","621108":"M","622288":"M","623249":"M","624085":"L","624923":"M","625799":"M",
-  "630160":"M","632061":"M","632817":"O","634210":"O","634587":"M","634708":"M","635258":"O","636023":"M",
-  "636058":"M","636512":"O","637206":"A","637802":"M","638081":"M","646154":"M","646586":"O","647220":"M",
-  "654294":"M","654678":"O","656083":"M","657084":"M","657656":"O","657778":"O","664389":"M","664395":"M",
-  "665014":"O","665390":"M","688204":"M","688797":"O","694622":"A","698032":"O","698981":"O","700127":"O",
-  "700678":"O","701310":"O","701565":"O","701779":"A","701782":"O","702192":"M","704737":"O","705980":"O",
-  "707667":"O","708080":"O","708612":"O","709326":"O","709475":"O","710874":"O","712000":"N","712500":"M",
-  "712926":"N","713219":"M","713654":"O","715907":"O","716251":"O","716367":"A","716967":"O","717907":"O"
+"899":"M","975":"M","390200":"O","393010":"L","412008":"M","418229":"L","449346":"O","456078":"L",
+"471844":"M","486456":"L","498559":"O","499474":"M","502123":"M","505550":"O","507820":"N","511936":"M",
+"513878":"G","536270":"L","537738":"L","538631":"O","541538":"G","542007":"M","544378":"O","548156":"M",
+"551304":"L","554779":"M","555605":"M","559080":"M","563508":"M","567896":"M","568244":"L","568525":"M",
+"573707":"O","576783":"M","577237":"L","584847":"M","586255":"M","589775":"M","590553":"O","593565":"M",
+"593863":"O","596771":"L","605533":"M","606716":"M","613256":"L","614640":"M","616808":"L","617273":"M",
+"617948":"M","621073":"M","621108":"M","622288":"M","623249":"M","624085":"L","624923":"M","625799":"M",
+"630160":"M","632061":"M","632817":"O","634210":"O","634587":"M","634708":"M","635258":"O","636023":"M",
+"636058":"M","636512":"O","637206":"A","637802":"M","638081":"M","646154":"M","646586":"O","647220":"M",
+"654294":"M","654678":"O","656083":"M","657084":"M","657656":"O","657778":"O","664389":"M","664395":"M",
+"665014":"O","665390":"M","688204":"M","688797":"O","694622":"A","698032":"O","698981":"O","700127":"O",
+"700678":"O","701310":"O","701565":"O","701779":"A","701782":"O","702192":"M","704737":"O","705980":"O",
+"707667":"O","708080":"O","708612":"O","709326":"O","709475":"O","710874":"O","712000":"N","712500":"M",
+"712926":"N","713219":"M","713654":"O","715907":"O","716251":"O","716367":"A","716967":"O","717907":"O"
 };
 const TYPE_NAME = {"M":"漫画改编","L":"轻小说改编","G":"游戏改编","N":"小说改编","O":"原创","A":"改编"};
+
+// 季度映射：月份 → 季节名 + giriGiriLove 的 vod_area
+const SEASON_BY_MONTH = {
+1: { season: "冬季", area: "一月"},
+4: { season: "春季", area: "四月"},
+7: { season: "夏季", area: "七月"},
+10: { season: "秋季", area: "十月"}
+};
 
 class DefaultExtension extends MProvider {
 headers() {
@@ -94,17 +129,59 @@ if (/第[一二三四五六七八九十\d]+季|第[一二三四五六七八九�
 return "";
 }
 
-// 当前季度（由日期推导，不写死：1-3月→一月，4-6月→四月，7-9月→七月，10-12月→十月）
-currentSeason() {
+// 当前季度（由日期推导，不写死：1-3月→冬季/一月，4-6月→春季/四月，7-9月→夏季/七月，10-12月→秋季/十月）
+currentQuarter() {
 const d = new Date();
 const y = d.getFullYear();
-const m = d.getMonth();
-let area;
-if (m <= 2) area = "一月";
-else if (m <= 5) area = "四月";
-else if (m <= 8) area = "七月";
-else area = "十月";
-return { year: String(y), area: area};
+const m = d.getMonth() + 1;
+let qm = 10;
+if (m <= 3) qm = 1;
+else if (m <= 6) qm = 4;
+else if (m <= 9) qm = 7;
+const info = SEASON_BY_MONTH[qm];
+return { year: String(y), month: qm, season: info.season, area: info.area, label: y + "年" + info.season, value: y + "-" + qm, isCurrent: true};
+}
+
+// 季度选项：当前季度往前 8 个季度（当前 + 往前 7 个），每项 {label:"2026年秋季", value:"2026-10", year, area}
+quarterOptions() {
+const cur = this.currentQuarter();
+const opts = [];
+let y = parseInt(cur.year, 10);
+let m = cur.month;
+for (let i = 0; i < 8; i++) {
+const info = SEASON_BY_MONTH[m];
+opts.push({ label: y + "年" + info.season, value: y + "-" + m, year: String(y), area: info.area, isCurrent: i === 0});
+m -= 3;
+if (m < 1) { m += 12; y -= 1;}
+}
+return opts;
+}
+
+// 从筛选器里读选中的季度；没选或读不到就默认当前季度
+quarterFromFilters(filters) {
+const opts = this.quarterOptions();
+if (filters) {
+for (const f of filters) {
+if (f && f["type"] === "quarter") {
+const st = f["state"];
+const vals = f["values"] || [];
+if (typeof st === "number" && vals[st] && vals[st]["value"]) {
+const v = String(vals[st]["value"]);
+const parts = v.split("-");
+if (parts.length === 2) {
+const y = parts[0];
+const m = parseInt(parts[1], 10);
+const info = SEASON_BY_MONTH[m];
+if (info) {
+const cur = this.currentQuarter();
+return { year: y, month: m, season: info.season, area: info.area, label: y + "年" + info.season, value: v, isCurrent: (y === cur.year && m === cur.month)};
+}
+}
+}
+}
+}
+}
+return this.currentQuarter();
 }
 
 // 原作字段 → 改编类型（与生成快照时用的同一套规则；详情页实时核对用）
@@ -138,7 +215,7 @@ const code = TYPE_MAP[String(show.id || "")];
 return (code && TYPE_NAME[code])? TYPE_NAME[code]: "";
 }
 
-// 列表里的类型标签（续集/重制 + 改编来源，例：【续集·漫画改编】；
+// 列表里的类型标签（续集/重制 + 改编来源，例：；
 // 搜索结果里快照查不到的老番不硬标，只给标题启发式能定下来的）
 typeLabel(show, forSearch) {
 const name = (show.name_cn || "") + " " + (show.name || "");
@@ -147,19 +224,19 @@ const t = this.titleType(name);
 if (t) parts.push(t);
 const adapt = this.adaptType(show);
 if (adapt) parts.push(adapt);
-if (parts.length) return "【" + parts.join("·") + "】";
-return forSearch? "": "【新番】";
+if (parts.length) return "";
+return forSearch? "": "";
 }
 
 verdict(score, votes, doing) {
 if (score === null || score === undefined || score === "") return "暂无评分，先观望一两集再决定。";
 const s = parseFloat(score);
 if (isNaN(s)) return "暂无评分，先观望一两集再决定。";
-if (votes !== null && votes !== undefined && votes < 50) return "刚开播不久，评分人数还少，先观望一两集再决定。";
+if (votes!== null && votes!== undefined && votes < 50) return "刚开播不久，评分人数还少，先观望一两集再决定。";
 if (s >= 8.0) return "本季值得追";
 if (s >= 7.0) return "可看";
 if (s >= 6.0) return "观望";
-if (s < 6.0 && votes !== null && votes >= 500) return "评分两极但话题度很高，先看一集再决定。";
+if (s < 6.0 && votes!== null && votes >= 500) return "评分两极但话题度很高，先看一集再决定。";
 return "谨慎";
 }
 
@@ -178,7 +255,7 @@ for (const it of (wd.items || [])) shows.push(it);
 const out = [];
 const seen = {};
 for (const it of shows) {
-if (!it || !it.id || seen[it.id]) continue;
+if (!it ||!it.id || seen[it.id]) continue;
 if (String(it.air_date || "") < SEASON_FROM) continue;
 seen[it.id] = true;
 out.push(it);
@@ -191,9 +268,9 @@ guideSort(shows) {
 shows.sort((a, b) => {
 const va = (a.rating && a.rating.total) || 0;
 const vb = (b.rating && b.rating.total) || 0;
-const sa = (va >= 50 && a.rating && a.rating.score !== null && a.rating.score !== undefined)? parseFloat(a.rating.score): -1;
-const sb = (vb >= 50 && b.rating && b.rating.score !== null && b.rating.score !== undefined)? parseFloat(b.rating.score): -1;
-if (sb !== sa) return sb - sa;
+const sa = (va >= 50 && a.rating && a.rating.score!== null && a.rating.score!== undefined)? parseFloat(a.rating.score): -1;
+const sb = (vb >= 50 && b.rating && b.rating.score!== null && b.rating.score!== undefined)? parseFloat(b.rating.score): -1;
+if (sb!== sa) return sb - sa;
 const da = (a.collection && a.collection.doing) || 0;
 const db = (b.collection && b.collection.doing) || 0;
 return db - da;
@@ -217,6 +294,36 @@ if (key &&!index[key]) index[key] = r;
 return index;
 }
 
+// 往季：giriGiriLove 按 vod_area+vod_year 服务端筛选（实测支持），按评分排。
+// 一个季度 60 部上下，limit=100 一调就够；total 超 100 时再翻页，上限 300 部。
+async fetchGGLQuarter(year, area) {
+const rows = [];
+let offset = 0;
+const limit = 100;
+let total = 0;
+do {
+const url = GG_API + "/get_list?vod_name=&vod_area=" + encodeURIComponent(area) + "&vod_year=" + encodeURIComponent(year) + "&offset=" + offset + "&limit=" + limit;
+let data = null;
+try {
+const res = await new Client().get(url, this.headers());
+data = JSON.parse(res.body || "");
+} catch (_) { data = null;}
+const info = (data && data.info) || {};
+total = info.total || 0;
+const r = info.rows || [];
+for (const row of r) rows.push(row);
+offset += r.length;
+if (r.length === 0) break;
+} while (offset < total && offset < 300);
+rows.sort((a, b) => {
+const sa = parseFloat(a.vod_score || 0);
+const sb = parseFloat(b.vod_score || 0);
+if (sb!== sa) return sb - sa;
+return (parseInt(b.vod_hits || 0, 10) - parseInt(a.vod_hits || 0, 10));
+});
+return rows;
+}
+
 matchGGL(index, show) {
 if (!index) return null;
 const a = this.normTitle(show.name_cn || "");
@@ -230,16 +337,144 @@ return null;
 toItem(show, ggl, forSearch) {
 const label = this.typeLabel(show, forSearch);
 const name = (show.name_cn || show.name || "").trim();
-const score = (show.rating && show.rating.score !== null && show.rating.score !== undefined)? parseFloat(show.rating.score): null;
+const score = (show.rating && show.rating.score!== null && show.rating.score!== undefined)? parseFloat(show.rating.score): null;
 const imageUrl = String((show.images && show.images.large) || "");
 return {
-name: label + name + ((score !== null && !isNaN(score))? (" " + score.toFixed(1) + "分"): ""),
+name: label + name + ((score!== null &&!isNaN(score))? (" " + score.toFixed(1) + "分"): ""),
 imageUrl: imageUrl,
 link: "bgm:" + String(show.id || "")
 };
 }
 
-async getPopular(page) {
+// 往季列表项（giriGiriLove 行）：类型只靠标题启发式，评分用 giriGiriLove 分
+toGGLItem(row) {
+const name = String(row.vod_name || "").trim();
+const t = this.titleType(name);
+const label = t? (""): "";
+const score = parseFloat(row.vod_score || 0);
+return {
+name: label + name + ((score &&!isNaN(score))? (" " + score.toFixed(1) + "分"): ""),
+imageUrl: String(row.vod_pic || ""),
+link: "ggl:" + String(row.vod_id || "")
+};
+}
+
+// ---- PV（B站） ----
+// 标题是不是 PV：先排除分集/合集/OP/ED/作画集锦/先行图，再看有没有 PV 信号。
+// 强信号：PV/预告/特报/ティザー/先导PV/正式PV/第X弹/特別PV/特别PV/本PV/Trailer。
+// 弱信号：含"先行"但不含分集特征（例如"先行PV"本身含 PV 已算强信号；纯"先行"只作第二梯队）。
+isPVTitle(title, tier) {
+const t = String(title || "");
+if (/第\s*\d+\s*[话集話]|全\s*\d+\s*[话集]|合集|完整版|未删减|周更|\d+\s*-\s*\d+\s*[话集]|OP|ED|先行图|作画集锦|第\d+集|精彩作画|第\d+話/.test(t)) return false;
+if (tier === 1) {
+return /PV|预告|特报|ティザー|ティーザー|先导PV|正式PV|第[一二三四五]弹|特別PV|特别PV|本PV|トレーラー|Trailer/i.test(t);
+}
+return /先行/i.test(t);
+}
+
+// B站搜 PV：番名 + " PV"，没有强信号的再搜 " 预告"；每番最多 3 条，去重。
+async fetchBiliPVs(nameCn, name) {
+const queries = [];
+const n1 = String(nameCn || "").trim();
+const n2 = String(name || "").trim();
+if (n1) queries.push(n1 + " PV");
+if (n2 && n2!== n1) queries.push(n2 + " PV");
+if (n1) queries.push(n1 + " 预告");
+const found = [];
+const seen = {};
+// 先扫强信号
+for (let tier = 1; tier <= 2; tier++) {
+if (found.length >= 3) break;
+for (const q of queries) {
+if (found.length >= 3) break;
+let videos = [];
+try {
+const res = await new Client().get(BILI_API + "?keyword=" + encodeURIComponent(q), this.headers());
+const data = JSON.parse(res.body || "");
+const results = (data && data.data && data.data.result) || [];
+for (const r of results) {
+if (r.result_type === "video") { videos = r.data || []; break;}
+}
+} catch (_) { videos = [];}
+for (const v of videos) {
+if (found.length >= 3) break;
+const bvid = String(v.bvid || "");
+if (!bvid || seen[bvid]) continue;
+const title = String(v.title || "").replace(/<[^>]+>/g, "");
+if (!this.isPVTitle(title, tier)) continue;
+seen[bvid] = true;
+found.push({ bvid: bvid, title: title, author: String(v.author || ""), pageUrl: "https://www.bilibili.com/video/" + bvid});
+}
+}
+}
+return found;
+}
+
+// WebView 提 B站直链：打开视频页，等 window.__playinfo__，取 durl（或 dash 最高码率）。
+// 提不到返回 null（调用方退回页地址）。服务器 B站页返回 412，但手机 IP 未必被拦，手机上可能行得通。
+async extractBiliDirect(pageUrl) {
+if (typeof evaluateJavascriptViaWebview!== "function") return null;
+const script = "(function(){var tries=0;var timer=setInterval(function(){tries++;var direct=null;try{var pi=window.__playinfo__;if(pi&&pi.data){var durl=pi.data.durl;if(durl&&durl.length&&durl[0].url){direct=durl[0].url;}else if(pi.data.dash&&pi.data.dash.video&&pi.data.dash.video.length){var vs=pi.data.dash.video.slice().sort(function(a,b){return (b.bandwidth||0)-(a.bandwidth||0);});direct=vs[0].baseUrl||vs[0].base_url||null;}}}catch(e){}if(direct||tries>24){clearInterval(timer);window.flutter_inappwebview.callHandler(\"setResponse\",JSON.stringify({direct:direct}));}},500);})()";
+try {
+const raw = await evaluateJavascriptViaWebview(pageUrl, this.headers(), script, 20);
+const d = JSON.parse(raw || "{}");
+if (d && d.direct) return String(d.direct);
+} catch (_) {}
+return null;
+}
+
+// PV 变成选集：每条 PV 一集，url 就是 B站视频页地址（getVideoList 再决定直链还是页地址）
+pvEpisodes(pvs) {
+const eps = [];
+for (let i = 0; i < pvs.length; i++) {
+const p = pvs[i];
+eps.push({ name: "PV" + (i + 1) + " · " + p.title, url: p.pageUrl});
+}
+return eps;
+}
+
+// 改编来源行：漫画《XXX》/轻小说《XXX》/游戏改编/小说《XXX》/原创番，无原作/续集/重制。
+// yuanzuo 是 Bangumi infobox 原作字段（作者+刊载，例如"むちまろ（講談社「週刊少年マガジン」連載）"）。
+sourceLineText(primary, adapt, yuanzuo, nameCn) {
+const y = String(yuanzuo || "").replace(/<[^>]+>/g, "").trim();
+let base = "";
+if (primary === "重制") base = "重制";
+else if (primary === "续集") base = "续集";
+else if (adapt === "漫画改编") base = "漫画《" + nameCn + "》";
+else if (adapt === "轻小说改编") base = "轻小说《" + nameCn + "》";
+else if (adapt === "游戏改编") base = "游戏改编";
+else if (adapt === "小说改编") base = "小说《" + nameCn + "》";
+else if (adapt === "原创" || primary === "原创") base = "原创番，无原作";
+else if (adapt === "改编") base = "改编";
+else base = "新番";
+if (primary === "续集" && adapt && adapt !== "原创" && adapt !== "改编") base += " · " + adapt;
+if (y && base.indexOf("原创") < 0) base += "（原作：" + y + "）";
+return base;
+}
+
+// 文字选集（没有 PV 时用）：信息写在选集项名字里，点开没有视频（getVideoList 对 text: 返回 []）。
+// 三类：改编来源、官方简介（摘录前 80 字）、最新动态（更新集数/播出星期/评分）。
+textEpisodes(opts) {
+const eps = [];
+if (opts.sourceLine) eps.push({ name: "改编来源：" + opts.sourceLine, url: "text:source" });
+if (opts.intro) {
+const ex = String(opts.intro).replace(/\s+/g, " ").trim();
+if (ex) eps.push({ name: "官方简介：" + ex.slice(0, 80) + (ex.length > 80 ? "……" : ""), url: "text:intro" });
+}
+if (opts.newsLine) eps.push({ name: "最新动态：" + opts.newsLine, url: "text:news" });
+return eps;
+}
+
+// 选集：有 PV 放 PV，没有 PV 放文字项（不空着，不编造）
+episodesFor(pvs, textOpts) {
+const eps = this.pvEpisodes(pvs || []);
+if (eps.length) return eps;
+return this.textEpisodes(textOpts || {});
+}
+
+async getPopular(page, filters) {
+const q = this.quarterFromFilters(filters);
+if (q.isCurrent) {
 const shows = await this.fetchCalendar();
 this.guideSort(shows);
 const items = [];
@@ -249,8 +484,18 @@ if (items.length >= 60) break;
 }
 return { list: items, hasNextPage: false};
 }
+const rows = await this.fetchGGLQuarter(q.year, q.area);
+const items = [];
+for (const r of rows) {
+items.push(this.toGGLItem(r));
+if (items.length >= 60) break;
+}
+return { list: items, hasNextPage: false};
+}
 
-async getLatestUpdates(page) {
+async getLatestUpdates(page, filters) {
+const q = this.quarterFromFilters(filters);
+if (q.isCurrent) {
 // “最新” = 今天播出的本季番，按在追人数排
 const shows = await this.fetchCalendar();
 const jsDay = new Date().getDay();
@@ -259,10 +504,14 @@ const today = shows.filter(s => s.air_weekday === bgmDay);
 today.sort((a, b) => (((b.collection && b.collection.doing) || 0) - ((a.collection && a.collection.doing) || 0)));
 return { list: today.map(s => this.toItem(s, null, false)), hasNextPage: false};
 }
+// 往季没有"今天更新"，最新 = 该季度按评分排
+const rows = await this.fetchGGLQuarter(q.year, q.area);
+return { list: rows.slice(0, 60).map(r => this.toGGLItem(r)), hasNextPage: false};
+}
 
 async search(query, page, filters) {
 const q = String(query || "").trim();
-if (!q) return await this.getPopular(page);
+if (!q) return await this.getPopular(page, filters);
 const url = BGM_API + "/search/subject/" + encodeURIComponent(q) + "?type=2&responseGroup=small&max_results=20";
 const res = await new Client().get(url, this.headers());
 const items = [];
@@ -276,19 +525,36 @@ items.push(this.toItem(s, null, true));
 return { list: items, hasNextPage: false};
 }
 
-// 详情：实时调 Bangumi v0 详情核对类型 + 评分，再用 giriGiriLove 搜简介/更新状态，拼成推荐词
+// 详情：实时调 Bangumi v0 详情核对类型 + 评分，再用 giriGiriLove 搜简介/更新状态，拼成推荐词；
+// 选集 = B站搜到的 PV（最多 3 条），没有 PV 就空着，不编造。
 async getDetail(url) {
 const link = String(url || "").trim();
-// 搜索走 giriGiriLove 数字 id 的回退（暂不常用，search 用的是 Bangumi）
-if (/^\d+$/.test(link)) {
-const res = await new Client().get(GG_API + "/get_detail?vod_id=" + link, this.headers());
+// giriGiriLove 往季番（link = ggl:<vod_id> 或纯数字）
+if (/^ggl:\d+$/.test(link) || /^\d+$/.test(link)) {
+const vid = link.replace(/^ggl:/, "").replace(/[^0-9]/g, "");
+if (!vid) return { name: "", imageUrl: "", description: "", genre: [], status: 3, episodes: []};
 let info = null;
-try { const d = JSON.parse(res.body || ""); info = d && d.info? d.info: null;} catch (_) {}
+try {
+const res = await new Client().get(GG_API + "/get_detail?vod_id=" + vid, this.headers());
+const d = JSON.parse(res.body || "");
+info = d && d.info? d.info: null;
+} catch (_) { info = null;}
 if (!info) return { name: "", imageUrl: "", description: "", genre: [], status: 3, episodes: []};
 const name = String(info.vod_name || "").trim();
 const primary = this.titleType(name) || "新番";
-const desc = "类型：" + primary + "\n简介：" + String(info.vod_content || "").replace(/<[^>]+>/g, "").trim();
-return { name: "" + name, imageUrl: String(info.vod_pic || ""), description: desc, genre: [], status: 3, episodes: []};
+const score = parseFloat(info.vod_score || 0);
+const lines = [];
+lines.push("类型：" + primary + "（往季只有 giriGiriLove 数据，类型只靠标题判断，没有 Bangumi 评分/排名）");
+if (score) lines.push("giriGiriLove " + score.toFixed(1) + "分" + (info.vod_hits? (" · " + info.vod_hits + "次点击"): "") + (info.vod_remarks? (" · " + String(info.vod_remarks)): ""));
+lines.push("简介：" + String(info.vod_content || info.vod_blurb || "").replace(/<[^>]+>/g, "").trim());
+lines.push("选集里是本番的 PV（B站搜的），点开后先试直接播，播不了就点播放器里的内置浏览器看。");
+const pvs = await this.fetchBiliPVs(name, "");
+const newsParts = [];
+if (info.vod_remarks) newsParts.push(String(info.vod_remarks));
+if (score) newsParts.push("giriGiriLove " + score.toFixed(1) + "分");
+if (info.vod_hits) newsParts.push(info.vod_hits + "次点击");
+const introText = String(info.vod_content || info.vod_blurb || "").replace(/<[^>]+>/g, "").trim();
+return { name: "" + name, imageUrl: String(info.vod_pic || ""), description: lines.join("\n"), genre: [], status: 3, episodes: this.episodesFor(pvs, { sourceLine: this.sourceLineText(primary, "", "", name), intro: introText, newsLine: newsParts.join(" · ") })};
 }
 const bgmId = link.replace(/^bgm:/, "").replace(/[^0-9]/g, "");
 if (!bgmId) return { name: "", imageUrl: "", description: "", genre: [], status: 3, episodes: []};
@@ -343,8 +609,8 @@ if (adapt && adapt!== primary) typeParts.push(adapt);
 const typeLine = "类型：" + (typeParts.length? typeParts.join(" · "): "未标（Bangumi 数据里没写）");
 const score = (subj.rating && subj.rating.score!== null && subj.rating.score!== undefined)? subj.rating.score: null;
 const total = (subj.rating && subj.rating.total!== null && subj.rating.total!== undefined)? subj.rating.total: null;
-const rank = (subj.rating && subj.rating.rank !== null && subj.rating.rank !== undefined)? subj.rating.rank: null;
-const doing = (subj.collection && subj.collection.doing !== null && subj.collection.doing !== undefined)? subj.collection.doing: null;
+const rank = (subj.rating && subj.rating.rank!== null && subj.rating.rank!== undefined)? subj.rating.rank: null;
+const doing = (subj.collection && subj.collection.doing!== null && subj.collection.doing!== undefined)? subj.collection.doing: null;
 const verdict = this.verdict(score, total, doing);
 const weekday = ["", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"][calWeekday || 0] || "";
 const blurb = ggl? String(ggl.vod_blurb || "").trim(): "";
@@ -358,7 +624,7 @@ if (total!== null) dataLine += "（" + total + "人评分）";
 if (seasonRank) dataLine += " · " + seasonRank;
 if (rank!== null) dataLine += " · Bangumi 总排名第" + rank + "位";
 lines.push(dataLine);
-lines.push("【一句话】" + verdict + (doing? ("（" + doing + "人在追）"): ""));
+lines.push("" + verdict + (doing? ("（" + doing + "人在追）"): ""));
 if (ggl) {
 let g = "";
 if (ggl.vod_score) g += "giriGiriLove " + ggl.vod_score + "分";
@@ -368,6 +634,7 @@ if (g) lines.push(g);
 }
 if (weekday) lines.push("每周" + weekday + "播出");
 lines.push("简介：" + intro);
+lines.push("选集里是本番的 PV（B站搜的），点开后先试直接播，播不了就点播放器里的内置浏览器看。");
 lines.push("资讯来源：Bangumi 日历 + giriGiriLove，数据实时更新，新番一上架就能看到，比等导视视频更快。");
 const genre = [];
 try {
@@ -378,23 +645,54 @@ if (genre.indexOf(gn) < 0) genre.push(gn);
 if (genre.length >= 8) break;
 }
 } catch (_) {}
+const pvs = await this.fetchBiliPVs(nameCn, subj.name || "");
+let yuanzuo = "";
+try {
+const ib2 = {};
+for (const e of (subj.infobox || [])) ib2[e.key] = e.value;
+yuanzuo = String(ib2["原作"] || "");
+} catch (_) {}
+const newsParts = [];
+if (ggl && ggl.vod_remarks) newsParts.push(String(ggl.vod_remarks));
+if (weekday) newsParts.push("每周" + weekday + "播出");
+if (score !== null) newsParts.push("Bangumi " + score + "分" + (total !== null? ("（" + total + "人评分）"): ""));
+const srcLine = this.sourceLineText(primary, adapt, yuanzuo, nameCn);
 return {
 name: "" + nameCn,
 imageUrl: (ggl && ggl.vod_pic)? String(ggl.vod_pic): String((subj.images && subj.images.large) || ""),
 description: lines.join("\n"),
 genre: genre,
 status: 3,
-episodes: []
+episodes: this.episodesFor(pvs, { sourceLine: srcLine, intro: intro, newsLine: newsParts.join(" · ") })
 };
 }
 
-// 资讯源，没有视频
+// PV 播放：首选 WebView 提直链（原生播）；提不到就返回 B站视频页（内置浏览器看）。
+// 注意：服务器 B站页返回 412，直链提取在服务器上测不出来，只能在手机上验证。
 async getVideoList(url) {
-return [];
+const pageUrl = String(url || "").trim();
+if (!pageUrl) return [];
+// 文字项（改编来源/官方简介/最新动态）：没有视频，返回空，不报错、不给假链接
+if (pageUrl.indexOf("text:") === 0) return [];
+const direct = await this.extractBiliDirect(pageUrl);
+if (direct) {
+return [{ url: direct, quality: "PV直链", originalUrl: pageUrl}];
+}
+return [{ url: pageUrl, quality: "PV · 内置浏览器", originalUrl: pageUrl}];
 }
 
 getFilterList() {
-return [];
+const opts = this.quarterOptions();
+const values = [];
+for (const o of opts) {
+values.push({ type_name: "SelectOption", name: o.label, value: o.value});
+}
+return [{
+type: "quarter",
+name: "季度",
+type_name: "SelectFilter",
+values: values
+}];
 }
 
 getSourcePreferences() {
