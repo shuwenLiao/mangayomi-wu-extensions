@@ -7,7 +7,7 @@ const mangayomiSources = [{
   "typeSource": "single",
   "itemType": 1,
   "isNsfw": false,
-  "version": "0.0.1",
+  "version": "0.0.2",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "hongguo.js"
@@ -126,14 +126,53 @@ class DefaultExtension extends MProvider {
     return { list: items, hasNextPage: hasNextPage };
   }
 
-  async getDetail(url) {
-    const m = (url || "").match(/series_id=(\d+)/);
-    const sid = m ? m[1] : "";
-    const res = await new Client().get(
-      this.getBaseUrl() + "/player/" + encodeURIComponent(sid),
-      this.headers()
-    );
-    const body = res.body || "";
+  // v0.0.2：详情页直连被拦（手机上 0 集）时的兜底：内置浏览器打开播放页，
+  // 等内嵌 JSON 里出现 vid_list/series_name 后把整页 HTML 交回来，再用同一套解析。
+  // 注意：红果是 JS 应用壳，innerText 里没有数据，必须读 outerHTML。
+  async loadDetailViaWebview(url) {
+    if (typeof evaluateJavascriptViaWebview !== "function") return "";
+    const script = `(function(){
+      if (window.__hongguoDetailRead) return;
+      window.__hongguoDetailRead = true;
+      var done = false, started = Date.now(), interval;
+      function send(value) {
+        if (done) return;
+        done = true;
+        if (interval) clearInterval(interval);
+        window.flutter_inappwebview.callHandler("setResponse", JSON.stringify(value));
+      }
+      function poll() {
+        var body = document.body;
+        if (body) {
+          var markup = document.documentElement.outerHTML || "";
+          var guarded = /Just a moment|Checking your browser|Attention Required/i.test(String(document.title || "")) ||
+            /cf-challenge|challenge-platform|cf-turnstile|_cf_chl/i.test(markup);
+          if (!guarded && (markup.indexOf("vid_list") !== -1 || markup.indexOf("series_name") !== -1)) {
+            send({html: markup, error: ""});
+            return;
+          }
+        }
+        if (Date.now() - started > 14500) send({html: "", error: "timeout"});
+      }
+      interval = setInterval(poll, 500);
+      poll();
+    })();`;
+    let result;
+    try {
+      result = await evaluateJavascriptViaWebview(url, this.headers(), [script], 18);
+    } catch (_) {
+      return "";
+    }
+    try {
+      const data = JSON.parse(String(result || ""));
+      return (data && data.html) ? data.html : "";
+    } catch (_) {
+      return "";
+    }
+  }
+
+  parseDetail(body, sid) {
+    body = body || "";
     const name = this.pickJsonString(body, "series_name") || "未命名短剧";
     const imageUrl = this.pickJsonString(body, "series_cover");
     const description = this.pickJsonString(body, "series_intro");
@@ -157,6 +196,24 @@ class DefaultExtension extends MProvider {
       genre: [],
       episodes: eps
     };
+  }
+
+  async getDetail(url) {
+    const m = (url || "").match(/series_id=(\d+)/);
+    const sid = m ? m[1] : "";
+    const playerUrl = this.getBaseUrl() + "/player/" + encodeURIComponent(sid);
+    let body = "";
+    try {
+      const res = await new Client().get(playerUrl, this.headers());
+      body = res.body || "";
+    } catch (_) { body = ""; }
+    // v0.0.2：直连拿不到 vid_list 时走 WebView 兜底
+    let parsed = this.parseDetail(body, sid);
+    if (parsed.episodes.length === 0) {
+      const wv = await this.loadDetailViaWebview(playerUrl);
+      if (wv) parsed = this.parseDetail(wv, sid);
+    }
+    return parsed;
   }
 
   async getVideoList(url) {

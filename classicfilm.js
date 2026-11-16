@@ -7,7 +7,7 @@ const mangayomiSources = [{
 "typeSource": "single",
 "itemType": 1,
 "isNsfw": false,
-"version": "0.0.3",
+"version": "0.0.4",
 "dateFormat": "",
 "dateFormatLocale": "",
 "pkgPath": "classicfilm.js"
@@ -117,6 +117,15 @@ link: "nokey:",
 imageUrl: TMDB_ICON
 };
 }
+// v0.0.4：Key 已填但 TMDB 连不上/返回失败时的说明项（和 noKeyItem 区分开，
+// 别让用户以为是没填 Key；点进去写清楚排查步骤）。
+failItem() {
+return {
+name: "TMDB 暂时连不上，点这里看原因",
+link: "tmdbfail:",
+imageUrl: TMDB_ICON
+};
+}
 async getPopular(page, filters) {
 if (!this.apiKey()) return { list: [this.noKeyItem()], hasNextPage: false};
 const decade = this.decadeFromFilters(filters);
@@ -125,7 +134,8 @@ const p = page && page > 0? page: 1;
 const d = await this.tmdbGet("/discover/movie",
 "sort_by=vote_average.desc&vote_count.gte=300&primary_release_date.gte=" + range[0] +
 "&primary_release_date.lte=" + range[1] + "&page=" + p);
-if (!d ||!d.results) return { list: [], hasNextPage: false};
+if (!d) return { list: [this.failItem()], hasNextPage: false};
+if (!d.results) return { list: [], hasNextPage: false};
 const list = d.results.map(m => this.toItem(m));
 return { list: list, hasNextPage:!!(d.page && d.total_pages && d.page < d.total_pages)};
 }
@@ -137,7 +147,8 @@ const p = page && page > 0? page: 1;
 const d = await this.tmdbGet("/discover/movie",
 "sort_by=popularity.desc&vote_count.gte=100&primary_release_date.gte=" + range[0] +
 "&primary_release_date.lte=" + range[1] + "&page=" + p);
-if (!d ||!d.results) return { list: [], hasNextPage: false};
+if (!d) return { list: [this.failItem()], hasNextPage: false};
+if (!d.results) return { list: [], hasNextPage: false};
 const list = d.results.map(m => this.toItem(m));
 return { list: list, hasNextPage:!!(d.page && d.total_pages && d.page < d.total_pages)};
 }
@@ -147,7 +158,8 @@ if (!q) return await this.getPopular(page, filters);
 if (!this.apiKey()) return { list: [this.noKeyItem()], hasNextPage: false};
 const p = page && page > 0? page: 1;
 const d = await this.tmdbGet("/search/movie", "query=" + encodeURIComponent(q) + "&page=" + p + "&include_adult=false");
-if (!d ||!d.results) return { list: [], hasNextPage: false};
+if (!d) return { list: [this.failItem()], hasNextPage: false};
+if (!d.results) return { list: [], hasNextPage: false};
 // 搜索不过滤年份（用户明确搜的片可能不在 1979 年之前），按原顺序返回。
 const list = d.results.map(m => this.toItem(m));
 return { list: list, hasNextPage:!!(d.page && d.total_pages && d.page < d.total_pages)};
@@ -173,11 +185,32 @@ status: 3,
 episodes: []
 };
 }
+if (link === "tmdbfail:") {
+return {
+name: "TMDB 暂时连不上",
+link: link,
+imageUrl: TMDB_ICON,
+description: "Key 已经填了，但这次没拿到 TMDB 的数据（网络被拦、TMDB 抽风或 Key 失效都可能）。\n1. 下拉刷新再试一次；\n2. 换个网络/VPN 节点再试；\n3. 还不行就去 themoviedb.org → 设置 → API 检查 Key 是否还有效。\n\n榜单和简介都要走 TMDB，TMDB 不通就只能先看这条说明，这不是源坏了。",
+genre: [],
+status: 3,
+episodes: []
+};
+}
 const m = link.match(/^tmdb:(\d+)$/);
 if (!m) return { name: "", imageUrl: "", description: "", genre: [], status: 3, episodes: []};
 const id = m[1];
 const d = await this.tmdbGet("/movie/" + id, "append_to_response=credits");
-if (!d ||!d.id) return { name: "", imageUrl: "", description: "", genre: [], status: 3, episodes: []};
+if (!d ||!d.id) {
+return {
+name: "TMDB 暂时连不上",
+link: link,
+imageUrl: TMDB_ICON,
+description: "这次没拿到这部片的 TMDB 数据（网络被拦或 TMDB 抽风）。下拉刷新/换网络节点后再点进来试试；Key 本身没问题的话，榜单页应该还能打开。",
+genre: [],
+status: 3,
+episodes: []
+};
+}
 const title = String(d.title || d.original_title || "").trim();
 const orig = String(d.original_title || "").trim();
 const year = this.yearOf(d.release_date);
@@ -224,7 +257,7 @@ imageUrl: this.posterUrl(d.poster_path),
 description: lines.join("\n"),
 genre: genres,
 status: 3,
-episodes: [{ name: "正片（B站）", url: "bili:" + id + ":" + title + ":" + orig + ":" + runtime}]
+episodes: [{ name: "正片（B站）", url: "bili:" + id + ":" + encodeURIComponent(title) + ":" + encodeURIComponent(orig) + ":" + runtime}]
 };
 }
 // ---- B站全片播放 ----
@@ -338,8 +371,12 @@ return null;
 async getVideoList(url) {
 const m = String(url || "").match(/^bili:(\d+):([^:]*):([^:]*):(\d*)$/);
 if (!m) return [];
-const titleZh = m[2] || "";
-const titleEn = m[3] || "";
+// v0.0.4：片名里有 ":"（如 2001: A Space Odyssey）时旧的 [^:]* 正则直接匹配失败、
+// getVideoList 返回 [] 导致播不了；getDetail 里已改用 encodeURIComponent 拼地址
+// （":" 编成 %3A 后不再破坏分隔），这里再解回来。
+let titleZh = "", titleEn = "";
+try { titleZh = decodeURIComponent(m[2] || ""); } catch (_) { titleZh = m[2] || ""; }
+try { titleEn = decodeURIComponent(m[3] || ""); } catch (_) { titleEn = m[3] || ""; }
 const runtimeMin = parseInt(m[4] || "0", 10) || 0;
 const film = await this.findBiliFilm(titleZh, titleEn, runtimeMin);
 if (!film) return [];

@@ -7,7 +7,7 @@ const mangayomiSources = [{
   "typeSource": "single",
   "itemType": 1,
   "isNsfw": false,
-  "version": "0.0.1",
+  "version": "0.0.2",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "mxdm.js"
@@ -129,9 +129,52 @@ class DefaultExtension extends MProvider {
     return { list: items, hasNextPage: false };
   }
 
-  async getDetail(url) {
-    const res = await new Client().get(this.fullUrl(url));
-    const doc = new Document(res.body);
+  // v0.0.2：详情页直连被拦（手机上 0 集）时的兜底：内置浏览器打开详情页，
+  // 等 ul.list24 出现后把整页 HTML 交回来，再用同一套解析。
+  async loadDetailViaWebview(url) {
+    if (typeof evaluateJavascriptViaWebview !== "function") return "";
+    const script = `(function(){
+      if (window.__mxdmDetailRead) return;
+      window.__mxdmDetailRead = true;
+      var done = false, started = Date.now(), interval;
+      function send(value) {
+        if (done) return;
+        done = true;
+        if (interval) clearInterval(interval);
+        window.flutter_inappwebview.callHandler("setResponse", JSON.stringify(value));
+      }
+      function poll() {
+        var body = document.body;
+        if (body) {
+          var markup = document.documentElement.outerHTML || "";
+          var guarded = /Just a moment|Checking your browser|Attention Required/i.test(String(document.title || "")) ||
+            /cf-challenge|challenge-platform|cf-turnstile|_cf_chl/i.test(markup);
+          if (!guarded && document.querySelector('ul.list24')) {
+            send({html: markup, error: ""});
+            return;
+          }
+        }
+        if (Date.now() - started > 14500) send({html: "", error: "timeout"});
+      }
+      interval = setInterval(poll, 500);
+      poll();
+    })();`;
+    let result;
+    try {
+      result = await evaluateJavascriptViaWebview(url, {}, [script], 18);
+    } catch (_) {
+      return "";
+    }
+    try {
+      const data = JSON.parse(String(result || ""));
+      return (data && data.html) ? data.html : "";
+    } catch (_) {
+      return "";
+    }
+  }
+
+  parseDetailHtml(html) {
+    const doc = new Document(html || "");
     const titleEl = doc.selectFirst("title");
     let name = titleEl ? (titleEl.text || "") : "";
     name = name.split("-")[0].trim();
@@ -154,6 +197,8 @@ class DefaultExtension extends MProvider {
         const epName = (a.text || "").trim();
         const epUrl = a.attr("href") || "";
         if (!epName || !epUrl) continue;
+        // 列表末尾的“展开全部”是 javascript:void(0)，不是剧集，跳过
+        if (epUrl.indexOf("javascript:") === 0) continue;
         eps.push({ name: this.stringUTF8(epName, true), url: epUrl });
       }
     }
@@ -164,6 +209,22 @@ class DefaultExtension extends MProvider {
       genre: genre,
       episodes: eps
     };
+  }
+
+  async getDetail(url) {
+    const detailUrl = this.fullUrl(url);
+    let html = "";
+    try {
+      const res = await new Client().get(detailUrl);
+      html = res.body || "";
+    } catch (_) { html = ""; }
+    // v0.0.2：直连拿不到剧集时走 WebView 兜底
+    let parsed = this.parseDetailHtml(html);
+    if (parsed.episodes.length === 0) {
+      const wv = await this.loadDetailViaWebview(detailUrl);
+      if (wv) parsed = this.parseDetailHtml(wv);
+    }
+    return parsed;
   }
 
   async getVideoList(url) {

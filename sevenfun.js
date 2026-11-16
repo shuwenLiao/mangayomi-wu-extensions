@@ -7,7 +7,7 @@ const mangayomiSources = [{
   "typeSource": "single",
   "itemType": 1,
   "isNsfw": false,
-  "version": "0.0.1",
+  "version": "0.0.2",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "sevenfun.js"
@@ -138,11 +138,55 @@ class DefaultExtension extends MProvider {
     return this.parseVideoItems(doc);
   }
 
-  async getDetail(url) {
-    const res = await new Client().get(this.fullUrl(url));
-    const doc = new Document(res.body);
+  // v0.0.2：详情页直连被拦（手机上 0 集）时的兜底：内置浏览器打开详情页，
+  // 等 div.vod-play-list-container 出现后把整页 HTML 交回来，再用同一套解析。
+  async loadDetailViaWebview(url) {
+    if (typeof evaluateJavascriptViaWebview !== "function") return "";
+    const script = `(function(){
+      if (window.__sevenfunDetailRead) return;
+      window.__sevenfunDetailRead = true;
+      var done = false, started = Date.now(), interval;
+      function send(value) {
+        if (done) return;
+        done = true;
+        if (interval) clearInterval(interval);
+        window.flutter_inappwebview.callHandler("setResponse", JSON.stringify(value));
+      }
+      function poll() {
+        var body = document.body;
+        if (body) {
+          var markup = document.documentElement.outerHTML || "";
+          var guarded = /Just a moment|Checking your browser|Attention Required/i.test(String(document.title || "")) ||
+            /cf-challenge|challenge-platform|cf-turnstile|_cf_chl/i.test(markup);
+          if (!guarded && document.querySelector('div.vod-play-list-container')) {
+            send({html: markup, error: ""});
+            return;
+          }
+        }
+        if (Date.now() - started > 14500) send({html: "", error: "timeout"});
+      }
+      interval = setInterval(poll, 500);
+      poll();
+    })();`;
+    let result;
+    try {
+      result = await evaluateJavascriptViaWebview(url, {}, [script], 18);
+    } catch (_) {
+      return "";
+    }
+    try {
+      const data = JSON.parse(String(result || ""));
+      return (data && data.html) ? data.html : "";
+    } catch (_) {
+      return "";
+    }
+  }
+
+  parseDetailHtml(html) {
+    const doc = new Document(html || "");
     const titleEl = doc.selectFirst("title");
-    let name = titleEl ? (titleEl.text || "") : "";
+    // 先把标题解回中文再按“简介”切（桥按 Latin-1 解码时，未解码的文本里没有“简介”二字，切不到）
+    let name = titleEl ? this.stringUTF8(titleEl.text || "", true) : "";
     name = name.split("简介")[0].replace(/[《》]/g, "").trim();
     const cover = doc.selectFirst("img.videoimg");
     const imageUrl = cover ? (cover.attr("src") || "") : "";
@@ -163,12 +207,28 @@ class DefaultExtension extends MProvider {
       break;
     }
     return {
-      name: this.stringUTF8(name, true),
+      name: name,
       imageUrl: imageUrl,
       description: description,
       genre: [],
       episodes: eps
     };
+  }
+
+  async getDetail(url) {
+    const detailUrl = this.fullUrl(url);
+    let html = "";
+    try {
+      const res = await new Client().get(detailUrl);
+      html = res.body || "";
+    } catch (_) { html = ""; }
+    // v0.0.2：直连拿不到剧集时走 WebView 兜底
+    let parsed = this.parseDetailHtml(html);
+    if (parsed.episodes.length === 0) {
+      const wv = await this.loadDetailViaWebview(detailUrl);
+      if (wv) parsed = this.parseDetailHtml(wv);
+    }
+    return parsed;
   }
 
   extractMediaUrls(body) {

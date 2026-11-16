@@ -7,7 +7,7 @@ const mangayomiSources = [{
   "typeSource": "single",
   "itemType": 1,
   "isNsfw": true,
-  "version": "0.0.2",
+  "version": "0.0.3",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "redgifs.js"
@@ -33,8 +33,12 @@ class DefaultExtension extends MProvider {
     return h;
   }
 
+  // v0.0.3：以前拿 token 或调接口时网络一断就直接抛错崩到界面；
+  // 现在失败返回 null，调用方按空结果处理。401 重试 3 次的逻辑不变。
   async fetchToken() {
-    const res = await new Client().get(this.apiBase() + "/v2/auth/temporary", this.headers(false));
+    let res = null;
+    try { res = await new Client().get(this.apiBase() + "/v2/auth/temporary", this.headers(false)); } catch (_) { res = null; }
+    if (!res) { rgToken = null; return null; }
     try {
       const d = JSON.parse(res.body || "{}");
       if (d.token) {
@@ -48,15 +52,17 @@ class DefaultExtension extends MProvider {
 
   // 带 token 的 API 请求；401 就换一个新 token 再试，最多试 3 次。
   // token 绑定 IP，手机换网/VPN 换出口都会让旧 token 失效，多试几次能扛住这种切换。
+  // 网络异常时返回 null（不抛错），调用方按空结果处理。
   async apiGet(path) {
     if (!rgToken) await this.fetchToken();
-    let res = await new Client().get(this.apiBase() + path, this.headers(true));
+    let res = null;
+    try { res = await new Client().get(this.apiBase() + path, this.headers(true)); } catch (_) { res = null; }
     let tries = 0;
-    while (res.statusCode === 401 && tries < 3) {
+    while (res && res.statusCode === 401 && tries < 3) {
       tries++;
       rgToken = null;
       await this.fetchToken();
-      res = await new Client().get(this.apiBase() + path, this.headers(true));
+      try { res = await new Client().get(this.apiBase() + path, this.headers(true)); } catch (_) { res = null; }
     }
     return res;
   }
@@ -92,7 +98,7 @@ class DefaultExtension extends MProvider {
   async getPopular(page) {
     const p = page || 1;
     const res = await this.apiGet("/v2/gifs/trending?order=trending&count=20&page=" + p);
-    return this.parseList(res.body || "");
+    return this.parseList(res ? (res.body || "") : "");
   }
 
   async getLatestUpdates(page) {
@@ -105,13 +111,14 @@ class DefaultExtension extends MProvider {
       "/v2/gifs/search?search_text=" + encodeURIComponent(query) +
       "&order=trending&count=20&page=" + p
     );
-    return this.parseList(res.body || "");
+    return this.parseList(res ? (res.body || "") : "");
   }
 
   async getDetail(url) {
     const id = (url || "").replace(/^https?:\/\/[^/]+\/watch\//, "").trim();
     if (!id) return { name: "", imageUrl: "", description: "", genre: [], episodes: [] };
     const res = await this.apiGet("/v2/gifs/" + encodeURIComponent(id));
+    if (!res) return { name: "", imageUrl: "", description: "", genre: [], episodes: [] };
     let g = null;
     try {
       g = JSON.parse(res.body || "{}").gif || null;
@@ -132,6 +139,7 @@ class DefaultExtension extends MProvider {
     const id = (url || "").replace(/^https?:\/\/[^/]+\/watch\//, "").trim();
     if (!id) return [];
     const res = await this.apiGet("/v2/gifs/" + encodeURIComponent(id));
+    if (!res) return [];
     let g = null;
     try {
       g = JSON.parse(res.body || "{}").gif || null;

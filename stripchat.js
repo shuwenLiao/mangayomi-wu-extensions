@@ -7,7 +7,7 @@ const mangayomiSources = [{
   "typeSource": "single",
   "itemType": 1,
   "isNsfw": true,
-  "version": "0.0.1",
+  "version": "0.0.2",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "stripchat.js"
@@ -35,10 +35,11 @@ class DefaultExtension extends MProvider {
   }
 
   // 在内置浏览器里打开首页，等房间缩略图出现后把整页 HTML 交回来
+  // v0.0.2：以前任何一步失败都直接 throw，Cloudflare 把后台 WebView 也拦住时
+  // getPopular/getDetail 会直接崩到界面；现在失败返回 ""，调用方按空结果处理
+  // （列表空着、详情只留“在网页中观看”那一集，用户还能手动用内置浏览器打开）。
   async loadViaWebview(url) {
-    if (typeof evaluateJavascriptViaWebview !== "function") {
-      throw new Error("Stripchat：当前 Mangayomi 不支持内置浏览器取页；请在详情页手动用内置浏览器打开网站");
-    }
+    if (typeof evaluateJavascriptViaWebview !== "function") return "";
     const script = String.raw`(function(){
       if (window.__scRead) return;
       window.__scRead = true;
@@ -70,14 +71,12 @@ class DefaultExtension extends MProvider {
     try {
       result = await evaluateJavascriptViaWebview(url, this.headers(), [script], 18);
     } catch (err) {
-      throw new Error("Stripchat：内置浏览器载入失败：" + String(err));
+      return "";
     }
     let data;
     try { data = JSON.parse(String(result || "")); }
-    catch (_) { throw new Error("Stripchat：内置浏览器没有取得有效网页；请在详情页手动用内置浏览器打开网站"); }
-    if (!data || !data.html) {
-      throw new Error("Stripchat：网站需要验证，内置浏览器没能自动通过；请在详情页手动用内置浏览器打开网站");
-    }
+    catch (_) { return ""; }
+    if (!data || !data.html) return "";
     return data.html;
   }
 

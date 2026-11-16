@@ -7,7 +7,7 @@ const mangayomiSources = [{
   "typeSource": "single",
   "itemType": 1,
   "isNsfw": false,
-  "version": "0.0.4",
+  "version": "0.0.5",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "ani.js"
@@ -124,9 +124,16 @@ class DefaultExtension extends MProvider {
     return items;
   }
 
+  // v0.0.5：直连被拦/断网时 Client.get 会抛错，以前会直接崩到界面；
+  // 现在吞掉返回 []，调用方按“无结果”处理，不破坏原有功能。
+  // （Turnstile 拦后台 WebView 是已知死胡同，本次不绕它、不改搜索逻辑。）
   async fetchRss() {
-    const res = await new Client().get(ANI_RSS, this.headers());
-    return this.parseRss(res.body || "");
+    try {
+      const res = await new Client().get(ANI_RSS, this.headers());
+      return this.parseRss(res.body || "");
+    } catch (_) {
+      return [];
+    }
   }
 
   // 按番剧 UUID 分组，一部番一条；link 用 "ani:<uuid>"，getDetail 凭它过滤
@@ -373,7 +380,7 @@ class DefaultExtension extends MProvider {
       "editTextPreference": {
         "title": "Url",
         "summary": "ANi 网址",
-        "value": "https://open.ani.rip",
+        "value": "https://openani.an-i.workers.dev",
         "dialogTitle": "URL",
         "dialogMessage": ""
       }

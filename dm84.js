@@ -7,7 +7,7 @@ const mangayomiSources = [{
   "typeSource": "single",
   "itemType": 1,
   "isNsfw": false,
-  "version": "0.0.1",
+  "version": "0.0.2",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "dm84.js"
@@ -160,9 +160,10 @@ class DefaultExtension extends MProvider {
     return { list: list, hasNextPage: false };
   }
 
-  async getDetail(url) {
-    const res = await new Client().get(this.fullUrl(url), this.headers());
-    const html = res.body || "";
+  // v0.0.2：getDetail 直连被拦（手机上 0 集）时的兜底：复用 loadListViaWebview，
+  // 等 ul.play_list 出现后把整页 HTML 交回来，再用同一套正则解析。
+  parseDetail(html) {
+    html = html || "";
     let name = "";
     const h1 = /<h1 class="v_title">[\s\S]*?<a[^>]*>([^<]+)<\/a>/i.exec(html);
     if (h1) name = h1[1];
@@ -202,6 +203,22 @@ class DefaultExtension extends MProvider {
       status: 3,
       episodes: eps
     };
+  }
+
+  async getDetail(url) {
+    const detailUrl = this.fullUrl(url);
+    let html = "";
+    try {
+      const res = await new Client().get(detailUrl, this.headers());
+      html = res.body || "";
+    } catch (_) { html = ""; }
+    // v0.0.2：直连拿不到剧集时走 WebView 兜底（与 getPopular/search 同一套方法）
+    let parsed = this.parseDetail(html);
+    if (parsed.episodes.length === 0) {
+      const wv = await this.loadListViaWebview(detailUrl, "ul.play_list");
+      if (wv) parsed = this.parseDetail(wv);
+    }
+    return parsed;
   }
 
   // 在内置浏览器里打开解析器页：主动触发播放（静音 play + 点播放按钮），

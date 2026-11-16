@@ -7,7 +7,7 @@ const mangayomiSources = [{
 "typeSource": "single",
 "itemType": 1,
 "isNsfw": false,
-"version": "0.0.7",
+"version": "0.0.8",
 "dateFormat": "",
 "dateFormatLocale": "",
 "pkgPath": "seasonal.js"
@@ -804,16 +804,66 @@ async search(query, page, filters) {
 const q = String(query || "").trim();
 if (!q) return await this.getPopular(page, filters);
 const url = BGM_API + "/search/subject/" + encodeURIComponent(q) + "?type=2&responseGroup=small&max_results=20";
-const res = await new Client().get(url, this.headers());
-const items = [];
+let items = [];
+// v0.0.8：以前这里 Client.get 抛错会直接崩到界面；现在吞掉，
+// Bangumi 搜不到/不可达时改走 giriGiriLove 兜底（和 getPopular 本季的双路一个做法）。
 try {
+const res = await new Client().get(url, this.headers());
 const data = JSON.parse(res.body || "");
 const list = (data && data.list)? data.list: [];
 for (const s of list) {
 items.push(this.toItem(s, null, true));
 }
-} catch (_) {}
-return { list: items, hasNextPage: false};
+} catch (_) { items = []; }
+if (items.length) return { list: items, hasNextPage: false};
+try {
+const res = await new Client().get(GG_API + "/get_list?vod_name=" + encodeURIComponent(q) + "&offset=0&limit=20", this.headers());
+const data = JSON.parse(res.body || "");
+const rows = (data && data.info && data.info.rows)? data.info.rows: [];
+return { list: rows.map(r => this.toGGLItem(r)), hasNextPage: false};
+} catch (_) { return { list: [], hasNextPage: false}; }
+}
+
+// v0.0.8：giriGiriLove 详情直连被拦时的兜底（和 girigirilove.js 0.0.2 同一路子）：
+// 内置浏览器打开同一详情 API，等 body 里出现 vod_name 再把 JSON 交回来。
+// 之前 ggl: 详情只有直连一条路，直连被拦就直接返回空详情。
+async loadGGLDetailJsonViaWebview(vid) {
+if (typeof evaluateJavascriptViaWebview!== "function") return "";
+const url = GG_API + "/get_detail?vod_id=" + vid;
+const script = `(function(){
+if (window.__seasGglDetailRead) return;
+window.__seasGglDetailRead = true;
+var done = false, started = Date.now(), interval;
+function send(value) {
+if (done) return;
+done = true;
+if (interval) clearInterval(interval);
+window.flutter_inappwebview.callHandler("setResponse", JSON.stringify(value));
+}
+function poll() {
+var txt = "";
+try {
+var b = document.body;
+txt = b ? (b.innerText || b.textContent || "") : "";
+} catch (e) { txt = ""; }
+if (txt && txt.indexOf("vod_name") !== -1) { send({json: txt}); return; }
+if (Date.now() - started > 14000) { send({json: ""}); return; }
+}
+interval = setInterval(poll, 500);
+poll();
+})()`;
+let result;
+try {
+result = await evaluateJavascriptViaWebview(url, this.headers(), [script], 18);
+} catch (_) {
+return "";
+}
+try {
+const data = JSON.parse(String(result || ""));
+return (data && data.json) ? data.json : "";
+} catch (_) {
+return "";
+}
 }
 
 // 详情：实时调 Bangumi v0 详情核对类型 + 评分，再用 giriGiriLove 搜简介/更新状态，拼成推荐词；
@@ -830,6 +880,16 @@ const res = await new Client().get(GG_API + "/get_detail?vod_id=" + vid, this.he
 const d = JSON.parse(res.body || "");
 info = d && d.info? d.info: null;
 } catch (_) { info = null;}
+// v0.0.8：直连拿不到时走 WebView 兜底（内置浏览器能过验证，见 loadGGLDetailJsonViaWebview）
+if (!info) {
+const raw = await this.loadGGLDetailJsonViaWebview(vid);
+if (raw) {
+try {
+const d = JSON.parse(raw);
+info = d && d.info? d.info: null;
+} catch (_) { info = null;}
+}
+}
 if (!info) return { name: "", imageUrl: "", description: "", genre: [], status: 3, episodes: []};
 const name = String(info.vod_name || "").trim();
 const primary = this.titleType(name) || "新番";

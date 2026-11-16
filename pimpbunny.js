@@ -7,7 +7,7 @@ const mangayomiSources = [{
   "typeSource": "single",
   "itemType": 1,
   "isNsfw": true,
-  "version": "0.0.1",
+  "version": "0.0.2",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "pimpbunny.js"
@@ -34,14 +34,18 @@ class DefaultExtension extends MProvider {
   }
 
   // 在内置浏览器里打开页面，等视频卡片出现后把整页 HTML 交回来
-  async loadViaWebview(url) {
-    if (typeof evaluateJavascriptViaWebview !== "function") {
-      throw new Error("PimpBunny：当前 Mangayomi 不支持内置浏览器取页；请在详情页手动用内置浏览器打开网站");
-    }
+  // v0.0.2：以前任何一步失败都直接 throw，Bunny Shield 把后台 WebView 也拦住时
+  // getPopular/getDetail 会直接崩到界面；现在失败返回 ""，调用方按空结果处理
+  // （列表空着、详情只留“在网页中观看”那一集，用户还能手动用内置浏览器打开）。
+  // readySelector：详情页不一定有 /videos/ 卡片链接，调用方可以传自己的就绪条件。
+  async loadViaWebview(url, readySelector) {
+    if (typeof evaluateJavascriptViaWebview !== "function") return "";
+    const sel = readySelector || 'a[href*="/videos/"]';
     const script = String.raw`(function(){
       if (window.__pbRead) return;
       window.__pbRead = true;
       var done = false, started = Date.now(), interval;
+      var READY = ${JSON.stringify(sel)};
       function send(value) {
         if (done) return;
         done = true;
@@ -55,7 +59,7 @@ class DefaultExtension extends MProvider {
           var markup = document.documentElement.outerHTML || "";
           var guarded = /Just a moment|Checking your browser|Attention Required|Establishing a secure connection|安全驗證|請稍候/i.test(title) ||
             /cf-challenge|challenge-platform|cf-turnstile|_cf_chl|bunny-shield/i.test(markup);
-          if (!guarded && document.querySelector('a[href*="/videos/"]')) {
+          if (!guarded && document.querySelector(READY)) {
             send({html: markup, error: ""});
             return;
           }
@@ -69,22 +73,20 @@ class DefaultExtension extends MProvider {
     try {
       result = await evaluateJavascriptViaWebview(url, this.headers(), [script], 18);
     } catch (err) {
-      throw new Error("PimpBunny：内置浏览器载入失败：" + String(err));
+      return "";
     }
     let data;
     try { data = JSON.parse(String(result || "")); }
-    catch (_) { throw new Error("PimpBunny：内置浏览器没有取得有效网页；请在详情页手动用内置浏览器打开网站"); }
-    if (!data || !data.html) {
-      throw new Error("PimpBunny：网站需要验证，内置浏览器没能自动通过；请在详情页手动用内置浏览器打开网站");
-    }
+    catch (_) { return ""; }
+    if (!data || !data.html) return "";
     return data.html;
   }
 
-  async fetchHtml(url) {
+  async fetchHtml(url, readySelector) {
     let res = null;
     try { res = await new Client().get(url, this.headers()); } catch (e) { res = null; }
     if (res && res.body && !this.isShieldPage(res.body, res.statusCode)) return res.body;
-    return this.loadViaWebview(url);
+    return this.loadViaWebview(url, readySelector);
   }
 
   parseCards(html) {
@@ -137,7 +139,8 @@ class DefaultExtension extends MProvider {
   }
 
   async getDetail(url) {
-    const html = await this.fetchHtml(url);
+    // 详情页不一定有 /videos/ 卡片链接，等 og:title 出现就算就绪
+    const html = await this.fetchHtml(url, 'meta[property="og:title"], a[href*="/videos/"]');
     let name = "", imageUrl = "";
     const ogTitle = /<meta[^>]*property="og:title"[^>]*content="([^"]+)"/i.exec(html);
     const ogImage = /<meta[^>]*property="og:image"[^>]*content="([^"]+)"/i.exec(html);
@@ -146,6 +149,13 @@ class DefaultExtension extends MProvider {
     if (!name) {
       const t = /<title[^>]*>([^<]+)<\/title>/i.exec(html);
       if (t) name = t[1].replace(/\s*-\s*PimpBunny.*$/i, "").trim();
+    }
+    // 页面完全没拿到时（盾把 WebView 也拦了），用地址里的 slug 当名字，别只剩 "PimpBunny"
+    if (!name) {
+      const sm = /\/videos\/([^\/]+)\/?$/.exec(String(url || ""));
+      if (sm) {
+        try { name = decodeURIComponent(sm[1]).replace(/-/g, " "); } catch (_) { name = sm[1].replace(/-/g, " "); }
+      }
     }
     return {
       name: name || "PimpBunny",

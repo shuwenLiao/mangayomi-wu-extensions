@@ -7,7 +7,7 @@ const mangayomiSources = [{
   "typeSource": "single",
   "itemType": 1,
   "isNsfw": false,
-  "version": "0.0.2",
+  "version": "0.0.3",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "fqdm.js"
@@ -135,13 +135,58 @@ class DefaultExtension extends MProvider {
     return { list: this.parseItems(res.body || ""), hasNextPage: false };
   }
 
-  async getDetail(url) {
-    const res = await new Client().get(this.fullUrl(url), this.headers());
-    const html = res.body || "";
+  // v0.0.3：详情页直连被拦（手机上 0 集）时的兜底：内置浏览器打开详情页，
+  // 等 div.module-play-list-content 出现后把整页 HTML 交回来，再用同一套正则解析。
+  async loadDetailViaWebview(url) {
+    if (typeof evaluateJavascriptViaWebview !== "function") return "";
+    const script = `(function(){
+      if (window.__fqdmDetailRead) return;
+      window.__fqdmDetailRead = true;
+      var done = false, started = Date.now(), interval;
+      function send(value) {
+        if (done) return;
+        done = true;
+        if (interval) clearInterval(interval);
+        window.flutter_inappwebview.callHandler("setResponse", JSON.stringify(value));
+      }
+      function poll() {
+        var body = document.body;
+        if (body) {
+          var markup = document.documentElement.outerHTML || "";
+          var guarded = /Just a moment|Checking your browser|Attention Required/i.test(String(document.title || "")) ||
+            /cf-challenge|challenge-platform|cf-turnstile|_cf_chl/i.test(markup);
+          if (!guarded && document.querySelector('div.module-play-list-content')) {
+            send({html: markup, error: ""});
+            return;
+          }
+        }
+        if (Date.now() - started > 14500) send({html: "", error: "timeout"});
+      }
+      interval = setInterval(poll, 500);
+      poll();
+    })();`;
+    let result;
+    try {
+      result = await evaluateJavascriptViaWebview(url, this.headers(), [script], 18);
+    } catch (_) {
+      return "";
+    }
+    try {
+      const data = JSON.parse(String(result || ""));
+      return (data && data.html) ? data.html : "";
+    } catch (_) {
+      return "";
+    }
+  }
+
+  parseDetail(html) {
+    html = html || "";
     let name = "";
     const titleM = /<title>([^<]+)<\/title>/i.exec(html);
     if (titleM) {
-      name = titleM[1].split("》")[0].replace(/《/g, "").trim();
+      // 先把标题解回中文再按“》”切（未解码的文本里没有“》”，切不到）
+      const rawTitle = this.fixText(titleM[1]);
+      name = rawTitle.split("》")[0].replace(/《/g, "").trim();
       name = name.split("_")[0].trim();
     }
     let imageUrl = "";
@@ -175,6 +220,22 @@ class DefaultExtension extends MProvider {
       status: 3,
       episodes: eps
     };
+  }
+
+  async getDetail(url) {
+    const detailUrl = this.fullUrl(url);
+    let html = "";
+    try {
+      const res = await new Client().get(detailUrl, this.headers());
+      html = res.body || "";
+    } catch (_) { html = ""; }
+    // v0.0.3：直连拿不到剧集时走 WebView 兜底
+    let parsed = this.parseDetail(html);
+    if (parsed.episodes.length === 0) {
+      const wv = await this.loadDetailViaWebview(detailUrl);
+      if (wv) parsed = this.parseDetail(wv);
+    }
+    return parsed;
   }
 
   // player_aaaa 里有嵌套的 vod_data，整段 JSON 不好直接切；只取 url/from/encrypt 三个字段
