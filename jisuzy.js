@@ -7,7 +7,7 @@ const mangayomiSources = [{
     "typeSource": "single",
     "itemType": 1,
     "isNsfw": false,
-    "version": "0.0.3",
+    "version": "0.0.4",
     "dateFormat": "",
     "dateFormatLocale": "",
     "pkgPath": "anime/src/zh/jisuzy.js"
@@ -33,7 +33,8 @@ class DefaultExtension extends MProvider {
     }
     async request(url) {
         const preference = new SharedPreferences();
-        return (await new Client({ 'useDartHttpClient': true }).get(preference.get("url") + "/api.php/provide/vod?ac=detail" + url, { "Referer": preference.get("url") })).body;
+        const base = preference.get("url") || "https://www.jisuzy.com";
+        return (await new Client({ 'useDartHttpClient': true }).get(base + "/api.php/provide/vod?ac=detail" + url, { "Referer": base })).body;
     }
     getHeaders(url) {
         throw new Error("getHeaders not implemented");
@@ -131,7 +132,8 @@ class DefaultExtension extends MProvider {
         try { detailJson = await this.request(url); } catch (_) { detailJson = ""; }
         if (!detailJson || detailJson.indexOf("vod_name") === -1) {
             const pref = new SharedPreferences();
-            const apiUrl = (pref.get("url") || "") + "/api.php/provide/vod?ac=detail" + url;
+            const base = pref.get("url") || "https://www.jisuzy.com";
+            const apiUrl = base + "/api.php/provide/vod?ac=detail" + url;
             const wv = await this.loadDetailJsonViaWebview(apiUrl);
             if (wv) detailJson = wv;
         }
