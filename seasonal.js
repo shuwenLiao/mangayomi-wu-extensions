@@ -7,7 +7,7 @@ const mangayomiSources = [{
 "typeSource": "single",
 "itemType": 1,
 "isNsfw": false,
-"version": "0.0.5",
+"version": "0.0.6",
 "dateFormat": "",
 "dateFormatLocale": "",
 "pkgPath": "seasonal.js"
@@ -497,9 +497,9 @@ const bgm = row._bgm || null;
 let suffix = "";
 if (bgm && bgm.score !== null && !isNaN(bgm.score)) {
 suffix = " Bangumi " + bgm.score.toFixed(1) + "分";
-if (gglScore && !isNaN(gglScore) && Math.abs(gglScore - bgm.score) >= 0.5) suffix += "（站内 " + gglScore.toFixed(1) + "分）";
+if (gglScore && !isNaN(gglScore) && Math.abs(gglScore - bgm.score) >= 0.5) suffix += "（" + gglScore.toFixed(1) + "分）";
 } else if (gglScore && !isNaN(gglScore)) {
-suffix = " 站内 " + gglScore.toFixed(1) + "分";
+suffix = " " + gglScore.toFixed(1) + "分";
 }
 return {
 name: label + name + suffix,
@@ -835,7 +835,7 @@ if (bgm.rank !== null) dl += " · 总排名第" + bgm.rank + "位";
 lines.push(dl);
 lines.push(this.verdict(bgm.score, bgm.total, null));
 }
-if (score) lines.push("站内分（仅供参考，偏高）：" + "giriGiriLove " + score.toFixed(1) + "分" + (info.vod_hits? (" · " + info.vod_hits + "次点击"): "") + (info.vod_remarks? (" · " + String(info.vod_remarks)): ""));
+if (score) lines.push("giriGiriLove " + score.toFixed(1) + "分（仅供参考，偏高）" + (info.vod_hits? (" · " + info.vod_hits + "次点击"): "") + (info.vod_remarks? (" · " + String(info.vod_remarks)): ""));
 lines.push("简介：" + String(info.vod_content || info.vod_blurb || "").replace(/<[^>]+>/g, "").trim());
 lines.push("选集里是本番的 PV（B站搜的），点开直接播；播不了就是 B站这次没给直链，退出来就行，不要一直等转圈。");
 const pvs = await this.fetchBiliPVs(name, bgm ? bgm.name : "", []);
