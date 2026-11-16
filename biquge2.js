@@ -7,7 +7,7 @@ const mangayomiSources = [{
   "typeSource": "single",
   "itemType": 2,
   "isNsfw": false,
-  "version": "0.0.1",
+  "version": "0.0.2",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "biquge2.js"
@@ -153,7 +153,8 @@ class DefaultExtension extends MProvider {
     const imageUrl = this.fullUrl(this.og(html, "image"));
     const genreText = this.og(html, "novel:category");
     const statusText = this.og(html, "novel:status");
-    const status = statusText === "完本" ? 1 : (statusText === "连载中" ? 0 : 3);
+    // v0.0.2：og:novel:status 实测值是“已完结”，旧版只认“完本”，已完结的书会被判未知。
+    const status = /完本|已完结/.test(statusText) ? 1 : (statusText === "连载中" ? 0 : 3);
     const genre = genreText ? [genreText] : [];
     // 章节目录在 /ml1.html、/ml2.html…… 每页约 100 章，跟“下一页”走到头
     const chapters = [];
@@ -171,7 +172,9 @@ class DefaultExtension extends MProvider {
         const href = m[1];
         if (/^\/[^/]+\/ml\d+\.html$/.test(href)) continue;
         const title = (m[2] || "").trim();
-        if (!/第.+章/.test(title)) continue;
+        // v0.0.2：不再要求标题含“第X章”——感言/楔子/番外类标题（实测前两章
+        // “三江感言”“要上架了说几句心里话”）旧版会被直接丢掉。目录页内
+        // /{slug}/*.html 的链接本身就是章节，导航类标题仍按下面排除。
         if (title.indexOf("开始阅读") >= 0 || title.indexOf("切换") >= 0 || title.indexOf("查看更多") >= 0) continue;
         const chapterUrl = this.fullUrl(href);
         if (seen[chapterUrl]) continue;

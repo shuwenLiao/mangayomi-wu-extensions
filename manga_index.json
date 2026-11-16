@@ -7345,7 +7345,7 @@
     "sourceCodeLanguage": 1,
     "sourceCodeUrl": "https://raw.githubusercontent.com/shuwenLiao/mangayomi-wu-extensions/main/manhuaren.js",
     "typeSource": "single",
-    "version": "0.0.1"
+    "version": "0.0.2"
   },
   {
     "additionalParams": "",
@@ -7367,7 +7367,7 @@
     "sourceCodeLanguage": 1,
     "sourceCodeUrl": "https://raw.githubusercontent.com/shuwenLiao/mangayomi-wu-extensions/main/dm5.js",
     "typeSource": "single",
-    "version": "0.0.1"
+    "version": "0.0.2"
   },
   {
     "additionalParams": "",
@@ -7389,7 +7389,7 @@
     "sourceCodeLanguage": 1,
     "sourceCodeUrl": "https://raw.githubusercontent.com/shuwenLiao/mangayomi-wu-extensions/main/zaimanhua.js",
     "typeSource": "single",
-    "version": "0.0.1"
+    "version": "0.0.2"
   },
   {
     "additionalParams": "",
@@ -7411,7 +7411,7 @@
     "sourceCodeLanguage": 1,
     "sourceCodeUrl": "https://raw.githubusercontent.com/shuwenLiao/mangayomi-wu-extensions/main/92mh.js",
     "typeSource": "single",
-    "version": "0.0.1"
+    "version": "0.0.2"
   },
   {
     "additionalParams": "",
@@ -7433,7 +7433,7 @@
     "sourceCodeLanguage": 1,
     "sourceCodeUrl": "https://raw.githubusercontent.com/shuwenLiao/mangayomi-wu-extensions/main/hipmh.js",
     "typeSource": "single",
-    "version": "0.0.1"
+    "version": "0.0.2"
   },
   {
     "additionalParams": "",
@@ -7455,7 +7455,7 @@
     "sourceCodeLanguage": 1,
     "sourceCodeUrl": "https://raw.githubusercontent.com/shuwenLiao/mangayomi-wu-extensions/main/guazimanhua.js",
     "typeSource": "single",
-    "version": "0.0.1"
+    "version": "0.0.2"
   },
   {
     "additionalParams": "",
@@ -7477,7 +7477,7 @@
     "sourceCodeLanguage": 1,
     "sourceCodeUrl": "https://raw.githubusercontent.com/shuwenLiao/mangayomi-wu-extensions/main/manwa.js",
     "typeSource": "single",
-    "version": "0.0.1"
+    "version": "0.0.2"
   },
   {
     "additionalParams": "",
@@ -7499,7 +7499,7 @@
     "sourceCodeLanguage": 1,
     "sourceCodeUrl": "https://raw.githubusercontent.com/shuwenLiao/mangayomi-wu-extensions/main/qqac.js",
     "typeSource": "single",
-    "version": "0.0.1"
+    "version": "0.0.2"
   },
   {
     "additionalParams": "",
@@ -7521,7 +7521,7 @@
     "sourceCodeLanguage": 1,
     "sourceCodeUrl": "https://raw.githubusercontent.com/shuwenLiao/mangayomi-wu-extensions/main/iqiyi.js",
     "typeSource": "single",
-    "version": "0.0.1"
+    "version": "0.0.2"
   },
   {
     "additionalParams": "",
@@ -7543,7 +7543,7 @@
     "sourceCodeLanguage": 1,
     "sourceCodeUrl": "https://raw.githubusercontent.com/shuwenLiao/mangayomi-wu-extensions/main/goda.js",
     "typeSource": "single",
-    "version": "0.0.1"
+    "version": "0.0.2"
   },
   {
     "name": "漫画排行榜",
@@ -7558,7 +7558,7 @@
     "hasCloudflare": false,
     "sourceCodeUrl": "https://raw.githubusercontent.com/shuwenLiao/mangayomi-wu-extensions/main/mangarank.js",
     "apiUrl": "",
-    "version": "0.0.3",
+    "version": "0.0.4",
     "isManga": true,
     "itemType": 0,
     "isFullData": false,

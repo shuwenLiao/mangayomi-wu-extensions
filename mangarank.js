@@ -7,7 +7,7 @@ const mangayomiSources = [{
   "typeSource": "single",
   "itemType": 0,
   "isNsfw": false,
-  "version": "0.0.3",
+  "version": "0.0.4",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "mangarank.js"
@@ -379,12 +379,13 @@ class DefaultExtension extends MProvider {
     const title = doc.selectFirst("div.book-title h1").text;
     const cover = "https:" + doc.selectFirst("p.hcover img").attr("src");
     const desc = doc.selectFirst("div#intro-all").text;
-    const info = doc.select("ul.detail-list li")[1].select("span");
-    const authors = info[1].text.replace("漫画作者：", "");
-    const genres = info[0].select("a").map(e => e.text);
+    const infoLis = doc.select("ul.detail-list li");
+    const info = infoLis.length > 1 ? infoLis[1].select("span") : [];
+    const authors = info.length > 1 ? info[1].text.replace("漫画作者：", "") : "";
+    const genres = info.length > 0 ? info[0].select("a").map(e => e.text) : [];
     const status_str = doc.selectFirst("li.status span").text;
     var status;
-    if (status_str == "已完结") {
+    if (status_str.indexOf("已完结") >= 0) {
       status = 1;
     } else {
       status = 0;
@@ -524,10 +525,18 @@ class DefaultExtension extends MProvider {
       });
       const chText = JSON.parse(chRes.body || "{}")["results"] || "";
       const chapterDatas = JSON.parse(this.decode(chText));
-      const list = (chapterDatas && chapterDatas.groups && chapterDatas.groups.default && chapterDatas.groups.default.chapters) || [];
-      for (const ch of list) {
-        if (!ch || !ch.id) continue;
-        episodes.push({ name: String(ch.name || "").trim() || ("第" + (episodes.length + 1) + "话"), url: slug + "|" + ch.id });
+      const groups = (chapterDatas && chapterDatas.groups) || {};
+      const pushGroup = function (list, prefix) {
+        for (const ch of (list || [])) {
+          if (!ch || !ch.id) continue;
+          const nm = String(ch.name || "").trim() || ("第" + (episodes.length + 1) + "话");
+          episodes.push({ name: prefix ? (prefix + " " + nm) : nm, url: slug + "|" + ch.id });
+        }
+      };
+      pushGroup(groups.default && groups.default.chapters, "");
+      for (const gk of Object.keys(groups)) {
+        if (gk === "default") continue;
+        pushGroup(groups[gk] && groups[gk].chapters, "【" + gk + "】");
       }
       episodes.reverse();
     } catch (_) { /* 解不开就 0 章，榜单照常显示 */ }
@@ -550,9 +559,10 @@ class DefaultExtension extends MProvider {
       const res = await new Client().get("https://www.mangacopy.com/comic/" + parts[0] + "/chapter/" + parts[1], {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36"
       });
-      const m = (res.body || "").match(/contentKey="(.*)"/);
+      const m = (res.body || "").match(/contentKey\s*=\s*['"]([^'"]+)['"]/);
       if (!m) throw new Error("章节图片取不到（contentKey 缺失）。");
       const results = JSON.parse(this.decode(m[1]));
+      if (!Array.isArray(results) || !results.length || !results[0]["url"]) throw new Error("章节图片解码结果异常。");
       return results.map(e => e["url"]);
     }
     // 2026-11-15 实测：漫画柜章节页是 8KB 空壳，图片地址不在静态 HTML 里，

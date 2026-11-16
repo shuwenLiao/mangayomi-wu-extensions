@@ -7,7 +7,7 @@ const mangayomiSources = [{
   "typeSource": "single",
   "itemType": 0,
   "isNsfw": false,
-  "version": "0.0.1",
+  "version": "0.0.2",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "guazimanhua.js"
@@ -32,6 +32,11 @@ class DefaultExtension extends MProvider {
       "Referer": this.getBaseUrl() + "/",
       "Accept-Language": "zh-CN,zh;q=0.9"
     };
+  }
+
+  // v0.0.2：图片请求带站首页 Referer（防 img.guazicdn.com 日后加防盗链）。
+  getHeaders() {
+    return this.headers();
   }
 
   async load(url) {
@@ -110,10 +115,30 @@ class DefaultExtension extends MProvider {
           imageUrl = node.image || "";
           description = node.description || "";
         }
+      }
+    }
+    // v0.0.2：章节目录以页面 /chapter.php 链接为主（实测 341 条），JSON-LD
+    // 的 ItemList 只含前 50 章，改为主解析 + JSON-LD 按 URL 去重合并。
+    const seenEp = {};
+    const pushEp = function (nm, u) {
+      const link = String(u || "");
+      if (!nm || !link || seenEp[link]) return;
+      seenEp[link] = true;
+      episodes.push({ name: String(nm).trim(), url: link, dateUpload: null, scanlator: null });
+    };
+    const reCh = /<a[^>]*href="(\/chapter\.php\?id=\d+)"[^>]*>([\s\S]*?)<\/a>/g;
+    let mc;
+    while ((mc = reCh.exec(html)) !== null) {
+      const title = mc[2].replace(/<[^>]+>/g, "").replace(/阅读/g, "").trim();
+      if (!title || title === "开始阅读") continue;
+      pushEp(title, this.fullUrl(mc[1]));
+    }
+    if (ld && ld["@graph"]) {
+      for (const node of ld["@graph"]) {
         if (node["@type"] === "ItemList" && Array.isArray(node.itemListElement)) {
           for (const it of node.itemListElement) {
             if (!it.url || !it.name) continue;
-            episodes.push({ name: String(it.name).trim(), url: String(it.url), dateUpload: null, scanlator: null });
+            pushEp(it.name, it.url);
           }
         }
       }
@@ -134,26 +159,15 @@ class DefaultExtension extends MProvider {
       const im = html.match(/<meta property="og:image" content="([^"]+)"/);
       imageUrl = im ? im[1] : "";
     }
-    if (episodes.length === 0) {
-      // 兜底：直接解析章节链接 <a href="/chapter.php?id=.."><span>标题</span>
-      const seen = {};
-      const re = /<a[^>]*href="(\/chapter\.php\?id=\d+)"[^>]*>([\s\S]*?)<\/a>/g;
-      let m;
-      while ((m = re.exec(html)) !== null) {
-        const title = m[2].replace(/<[^>]+>/g, "").replace(/阅读/g, "").trim();
-        if (!title || title === "开始阅读") continue;
-        const link = this.fullUrl(m[1]);
-        if (seen[link]) continue;
-        seen[link] = true;
-        episodes.push({ name: title, url: link, dateUpload: null, scanlator: null });
-      }
-    }
     if (episodes.length === 0) throw new Error("瓜子漫画：找不到章节目录");
+    // v0.0.2：只在详情主区域的 meta 里判状态；取不到时保持未知（3），
+    // 不再用整页 HTML 匹配（侧栏其他漫画的“已完结”标签会误判）。
     let status = 3;
     const metaM = html.match(/<p class="mobile-comic-meta">([^<]*)<\/p>/);
-    const metaText = metaM ? metaM[1] : html;
-    if (/完结/.test(metaText)) status = 1;
-    else if (/连载/.test(metaText)) status = 0;
+    if (metaM) {
+      if (/完结/.test(metaM[1])) status = 1;
+      else if (/连载/.test(metaM[1])) status = 0;
+    }
     return {
       name: name,
       link: url,

@@ -7,16 +7,18 @@ const mangayomiSources = [{
   "typeSource": "single",
   "itemType": 0,
   "isNsfw": false,
-  "version": "0.0.1",
+  "version": "0.0.2",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "zaimanhua.js"
 }];
 
 class DefaultExtension extends MProvider {
-  // 网站 API 要求带 uuid（任意 UUID 即可）
+  // 网站 API 要求带 uuid（任意 UUID 即可）。v0.0.2：每次随机生成，
+  // 旧版写死固定值，站方一旦校验 UUID 唯一性会全灭。
   _uuid() {
-    return "550e8400-e29b-41d4-a716-446655440000";
+    const h = function () { return Math.floor((1 + Math.random()) * 0x10000).toString(16).substring(1); };
+    return h() + h() + "-" + h() + "-4" + h().substring(1) + "-8" + h().substring(1) + "-" + h() + h() + h();
   }
 
   getBaseUrl() {
@@ -52,14 +54,21 @@ class DefaultExtension extends MProvider {
   }
 
   async loadJson(url) {
-    const res = await new Client().get(url, this.headers());
-    const code = Number(res.statusCode || 200);
-    if (code >= 400) throw new Error("再漫画：网站返回 HTTP " + code + "：" + url);
-    let j;
-    try { j = JSON.parse(res.body || "{}"); }
-    catch (e) { throw new Error("再漫画：接口返回不是 JSON：" + url); }
-    if (j.errno !== 0) throw new Error("再漫画：接口错误（" + (j.errmsg || j.errno) + "）");
-    return j.data;
+    // v0.0.2：失败重试一次再抛错（网络抖动时有用）。
+    let lastErr = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const res = await new Client().get(url, this.headers());
+        const code = Number(res.statusCode || 200);
+        if (code >= 400) throw new Error("再漫画：网站返回 HTTP " + code + "：" + url);
+        let j;
+        try { j = JSON.parse(res.body || "{}"); }
+        catch (e) { throw new Error("再漫画：接口返回不是 JSON：" + url); }
+        if (j.errno !== 0) throw new Error("再漫画：接口错误（" + (j.errmsg || j.errno) + "）");
+        return j.data;
+      } catch (e) { lastErr = e; }
+    }
+    throw lastErr;
   }
 
   detailLink(comicId) {

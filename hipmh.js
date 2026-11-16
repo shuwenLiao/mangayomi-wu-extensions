@@ -7,7 +7,7 @@ const mangayomiSources = [{
   "typeSource": "single",
   "itemType": 0,
   "isNsfw": true,
-  "version": "0.0.1",
+  "version": "0.0.2",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "hipmh.js"
@@ -49,14 +49,26 @@ class DefaultExtension extends MProvider {
   }
 
   async loadJson(url) {
-    const res = await new Client().get(url, this.headers());
-    const code = Number(res.statusCode || 200);
-    if (code >= 400) throw new Error("嬉皮漫画：网站返回 HTTP " + code + "：" + url);
-    const body = res.body || "";
-    let j;
-    try { j = JSON.parse(body); } catch (e) { throw new Error("嬉皮漫画：接口返回不是 JSON：" + url); }
-    if (j.code !== undefined && Number(j.code) !== 200) throw new Error("嬉皮漫画：接口错误 " + j.code + " " + (j.message || "") + "：" + url);
-    return j.data;
+    // v0.0.2：失败重试一次再抛错。
+    let lastErr = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const res = await new Client().get(url, this.headers());
+        const code = Number(res.statusCode || 200);
+        if (code >= 400) throw new Error("嬉皮漫画：网站返回 HTTP " + code + "：" + url);
+        const body = res.body || "";
+        let j;
+        try { j = JSON.parse(body); } catch (e) { throw new Error("嬉皮漫画：接口返回不是 JSON：" + url); }
+        if (j.code !== undefined && Number(j.code) !== 200) throw new Error("嬉皮漫画：接口错误 " + j.code + " " + (j.message || "") + "：" + url);
+        return j.data;
+      } catch (e) { lastErr = e; }
+    }
+    throw lastErr;
+  }
+
+  // v0.0.2：图片请求带站首页 Referer（防 s3imgs.top 日后加防盗链）。
+  getHeaders() {
+    return this.headers();
   }
 
   coverUrl(path) {
@@ -210,7 +222,8 @@ class DefaultExtension extends MProvider {
       page++;
     }
     chapters.sort((a, b) => (a._num || 0) - (b._num || 0));
-    const episodes = chapters.map((c) => ({ name: c.name, url: c.url, dateUpload: c.dateUpload, scanlator: c.scanlator }));
+    // v0.0.2：apiHid 换算失败的章节 url 为空，点开必报错，直接过滤掉。
+    const episodes = chapters.filter((c) => !!c.url).map((c) => ({ name: c.name, url: c.url, dateUpload: c.dateUpload, scanlator: c.scanlator }));
     return {
       name: (d.title || "").trim(),
       link: url,

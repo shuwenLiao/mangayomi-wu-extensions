@@ -100,7 +100,7 @@
     "hasCloudflare": false,
     "sourceCodeUrl": "https://raw.githubusercontent.com/shuwenLiao/mangayomi-wu-extensions/main/biquge2.js",
     "apiUrl": "",
-    "version": "0.0.1",
+    "version": "0.0.2",
     "isManga": false,
     "itemType": 2,
     "isFullData": false,

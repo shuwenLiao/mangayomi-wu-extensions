@@ -7,7 +7,7 @@ const mangayomiSources = [{
   "typeSource": "single",
   "itemType": 0,
   "isNsfw": false,
-  "version": "0.0.1",
+  "version": "0.0.2",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "dm5.js"
@@ -34,8 +34,15 @@ class DefaultExtension extends MProvider {
     };
   }
 
-  getHeaders() {
-    return this.headers();
+  // v0.0.2：cdndm5 图片 key + 章节页 Referer 缺一不可（首页 Referer 会 403）。
+  // 图片 URL 自带 cid 参数，拼出章节页 https://www.dm5.com/m{cid}/ 当 Referer。
+  getHeaders(url) {
+    const h = this.headers();
+    try {
+      const m = String(url || "").match(/[?&]cid=(\d+)/);
+      if (m) h["Referer"] = this.getBaseUrl() + "/m" + m[1] + "/";
+    } catch (_) { /* 回退首页 Referer */ }
+    return h;
   }
 
   fullUrl(url) {
@@ -106,7 +113,7 @@ class DefaultExtension extends MProvider {
     const url = this.getBaseUrl() + "/search?title=" + encodeURIComponent(query) + "&language=1&page=" + page;
     const html = await this.load(url);
     const items = this.parseMhItems(html);
-    return { list: items, hasNextPage: html.indexOf("page=" + (page + 1)) >= 0 };
+    return { list: items, hasNextPage: items.length > 0 && html.indexOf("page=" + (page + 1)) >= 0 };
   }
 
   meta(html, name) {
@@ -179,8 +186,13 @@ class DefaultExtension extends MProvider {
   async _ashxPage(chapterUrl, cid, mid, dt, sign, pageNum) {
     const q = "cid=" + cid + "&page=" + pageNum + "&key=&language=1&gtk=6&_cid=" + cid +
       "&_mid=" + mid + "&_dt=" + encodeURIComponent(dt) + "&_sign=" + sign;
-    const body = await this.load(chapterUrl + "chapterfun.ashx?" + q, chapterUrl);
-    const unpacked = this._unpackPacked(body);
+    // v0.0.2：解包失败重试一次（偶发空响应直接返回 [] 会让 getPageList 提前断图）。
+    let unpacked = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const body = await this.load(chapterUrl + "chapterfun.ashx?" + q, chapterUrl);
+      unpacked = this._unpackPacked(body);
+      if (unpacked) break;
+    }
     if (!unpacked) return [];
     const pixM = unpacked.match(/pix\s*=\s*\\?"([^"\\]+)/);
     const keyM = unpacked.match(/var key\s*=\s*\\?'([^'\\]+)/);

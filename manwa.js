@@ -7,7 +7,7 @@ const mangayomiSources = [{
   "typeSource": "single",
   "itemType": 0,
   "isNsfw": true,
-  "version": "0.0.1",
+  "version": "0.0.2",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "manwa.js"
@@ -36,14 +36,27 @@ class DefaultExtension extends MProvider {
   }
 
   async loadJson(url) {
-    const res = await new Client().get(url, this.headers());
-    const code = Number(res.statusCode || 200);
-    if (code >= 400) throw new Error("漫蛙漫画：网站返回 HTTP " + code + "：" + url);
-    const body = res.body || "";
-    let j;
-    try { j = JSON.parse(body); } catch (e) { throw new Error("漫蛙漫画：接口返回不是 JSON：" + url); }
-    if (j.code !== undefined && Number(j.code) !== 200) throw new Error("漫蛙漫画：接口错误 " + j.code + " " + (j.msg || j.message || "") + "：" + url);
-    return j.data;
+    // v0.0.2：空响应 / 非 JSON 时重试一次（审计中遇到过一次空响应，随后重试即 200）。
+    let lastErr = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const res = await new Client().get(url, this.headers());
+        const code = Number(res.statusCode || 200);
+        if (code >= 400) throw new Error("漫蛙漫画：网站返回 HTTP " + code + "：" + url);
+        const body = res.body || "";
+        if (!body.trim()) throw new Error("漫蛙漫画：接口返回空响应：" + url);
+        let j;
+        try { j = JSON.parse(body); } catch (e) { throw new Error("漫蛙漫画：接口返回不是 JSON：" + url); }
+        if (j.code !== undefined && Number(j.code) !== 200) throw new Error("漫蛙漫画：接口错误 " + j.code + " " + (j.msg || j.message || "") + "：" + url);
+        return j.data;
+      } catch (e) { lastErr = e; }
+    }
+    throw lastErr;
+  }
+
+  // v0.0.2：图片请求带站首页 Referer。
+  getHeaders() {
+    return this.headers();
   }
 
   comicLink(it) {

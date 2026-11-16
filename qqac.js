@@ -7,7 +7,7 @@ const mangayomiSources = [{
   "typeSource": "single",
   "itemType": 0,
   "isNsfw": false,
-  "version": "0.0.1",
+  "version": "0.0.2",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "qqac.js"
@@ -32,6 +32,11 @@ class DefaultExtension extends MProvider {
       "Referer": this.getBaseUrl() + "/",
       "Accept-Language": "zh-CN,zh;q=0.9"
     };
+  }
+
+  // v0.0.2：图片请求带站首页 Referer（章节图 host 未实测，留一手）。
+  getHeaders() {
+    return this.headers();
   }
 
   fullUrl(url) {
@@ -213,6 +218,8 @@ class DefaultExtension extends MProvider {
   }
 
   // ---------- nonce 里 (+eval("...")) 小表达式求值：数字/+-*/%/括号/~~ /Math.round/'c'.charCodeAt() ----------
+  // v0.0.2：补 !（逻辑非）与字符串字面量 .substring/.slice/.charAt/.length
+  // （真实 nonce 含 !1 与 '123'.substring(2)，旧版直接抛 bad number）。
   _evalArith(src) {
     let s = src.replace(/'([^']*)'\.charCodeAt\(\s*\)/g, function (_, ch) {
       return String(ch.charCodeAt(0));
@@ -229,8 +236,37 @@ class DefaultExtension extends MProvider {
       if (pos === start) throw new Error("bad number at " + pos + " in " + src);
       return parseFloat(s.slice(start, pos));
     };
+    const parseStrLit = function () {
+      // 字符串字面量，可带 .substring(a[,b]) / .slice(a[,b]) / .charAt(n) / .length
+      const q = s[pos];
+      let j = pos + 1;
+      let lit = "";
+      while (j < s.length && s[j] !== q) {
+        if (s[j] === "\\" && j + 1 < s.length) { lit += s[j + 1]; j += 2; }
+        else { lit += s[j]; j++; }
+      }
+      pos = j + 1;
+      skip();
+      const m = s.slice(pos).match(/^\.(substring|slice)\(\s*(-?\d+)\s*(?:,\s*(-?\d+)\s*)?\)/);
+      if (m) {
+        pos += m[0].length;
+        const a = parseInt(m[2], 10);
+        const b = m[3] !== undefined ? parseInt(m[3], 10) : undefined;
+        return b === undefined ? lit.substring(a) : lit.substring(a, b);
+      }
+      const mc = s.slice(pos).match(/^\.charAt\(\s*(-?\d+)\s*\)/);
+      if (mc) { pos += mc[0].length; return lit.charAt(parseInt(mc[1], 10)); }
+      if (s.slice(pos, pos + 7) === ".length") { pos += 7; return lit.length; }
+      return lit;
+    };
     const parsePrimary = function () {
       skip();
+      if (s[pos] === '"' || s[pos] === "'") return parseStrLit();
+      if (s[pos] === "!") {
+        pos++;
+        const v = parsePrimary();
+        return v ? 0 : 1;
+      }
       if (s[pos] === "(") {
         pos++;
         const v = parseAdd();
@@ -259,13 +295,13 @@ class DefaultExtension extends MProvider {
       return parseNum();
     };
     const parseMul = function () {
-      let v = parsePrimary();
+      let v = Number(parsePrimary());
       for (;;) {
         skip();
         const c = s[pos];
         if (c === "*" || c === "/" || c === "%") {
           pos++;
-          const r = parsePrimary();
+          const r = Number(parsePrimary());
           v = c === "*" ? v * r : (c === "/" ? v / r : v % r);
         } else break;
       }
@@ -294,7 +330,31 @@ class DefaultExtension extends MProvider {
   // 按出现顺序拼出字符串字面量与 eval 结果
   extractNonce(html) {
     const m = html.match(/window\[[^\]]+\]\s*=\s*([^;]*eval\([^;]*);/);
-    if (!m) throw new Error("腾讯动漫：章节页找不到 nonce");
+    if (!m) {
+      // v0.0.2 回退：纯字符串拼接的 nonce（无 eval，如 window["no"+"nce"] = '' + '11f159…'）
+      const m2 = html.match(/window\[[^\]]+\]\s*=\s*([^;]+);/);
+      if (m2) {
+        let out2 = "";
+        const rhs2 = m2[1];
+        let i2 = 0;
+        while (i2 < rhs2.length) {
+          const ch2 = rhs2[i2];
+          if (ch2 === '"' || ch2 === "'") {
+            const q2 = ch2;
+            let j2 = i2 + 1;
+            let lit2 = "";
+            while (j2 < rhs2.length && rhs2[j2] !== q2) {
+              if (rhs2[j2] === "\\" && j2 + 1 < rhs2.length) { lit2 += rhs2[j2 + 1]; j2 += 2; }
+              else { lit2 += rhs2[j2]; j2++; }
+            }
+            out2 += lit2;
+            i2 = j2 + 1;
+          } else { i2++; }
+        }
+        if (out2) return out2;
+      }
+      throw new Error("腾讯动漫：章节页找不到 nonce");
+    }
     const rhs = m[1];
     let out = "";
     let i = 0;
@@ -348,7 +408,9 @@ class DefaultExtension extends MProvider {
 
   async getPageList(chapterUrl) {
     const html = await this.load(chapterUrl);
-    const data = this.decodeChapterData(html);
+    let data;
+    try { data = this.decodeChapterData(html); }
+    catch (e) { throw new Error("腾讯动漫：章节解码失败（" + chapterUrl + "）：" + e.message); }
     if (!data.chapter || data.chapter.canRead === false || data.chapter.vipStatus === 2) {
       throw new Error("腾讯动漫：本话需 VIP / 登录后阅读（" + ((data.chapter && data.chapter.cTitle) || "") + "）");
     }

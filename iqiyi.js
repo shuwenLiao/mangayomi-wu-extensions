@@ -7,7 +7,7 @@ const mangayomiSources = [{
   "typeSource": "single",
   "itemType": 0,
   "isNsfw": false,
-  "version": "0.0.1",
+  "version": "0.0.2",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "iqiyi.js"
@@ -106,6 +106,13 @@ class DefaultExtension extends MProvider {
     return base_url;
   }
 
+  // v0.0.2：接口 host 固定为 comic.iqiyi.com。mangayomiSources 的 baseUrl
+  // 写的是 manhua.iqiyi.com（展示用），若用户把 domain_url 改成它，全部接口 404。
+  // 签名与章节 URL 一律走 _apiHost()，不再受 domain_url 设置影响。
+  _apiHost() {
+    return "https://comic.iqiyi.com";
+  }
+
   // 爱奇艺漫画 H5 接口签名：header md5 = MD5(path + query + key)
   // h5 平台：srcPlatform 14 / appVer 3.0.0 / key 3sj8...；acg 平台：23 / 100.0.0 / key 0n9w...
   _signedUrl(path, params, platform) {
@@ -122,25 +129,32 @@ class DefaultExtension extends MProvider {
     all.agentVersion = "h5";
     const qs = Object.keys(all).map(function (k) { return k + "=" + all[k]; }).join("&");
     const md5 = this._md5(path + qs + pf.key);
-    return { url: this.getBaseUrl() + path + "?" + qs, md5: md5 };
+    return { url: this._apiHost() + path + "?" + qs, md5: md5 };
   }
 
   async _api(path, params, platform) {
-    const s = this._signedUrl(path, params, platform);
-    const res = await new Client().get(s.url, {
-      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
-      "Referer": "https://manhua.iqiyi.com/comic/index",
-      "Accept-Language": "zh-CN,zh;q=0.9",
-      "md5": s.md5
-    });
-    const code = Number(res.statusCode || 200);
-    if (code >= 400) throw new Error("爱奇艺动漫：接口返回 HTTP " + code + "：" + path);
-    let j;
-    try { j = JSON.parse(res.body || "{}"); } catch (e) { throw new Error("爱奇艺动漫：接口返回非 JSON：" + path); }
-    if (j.code !== "A00000" && j.code !== "A00001") {
-      throw new Error("爱奇艺动漫：接口错误 " + (j.code || "") + " " + (j.msg || ""));
+    // v0.0.2：网络层失败重试一次（审计中遇到过一次 SSL EOF）。
+    let lastErr = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const s = this._signedUrl(path, params, platform);
+        const res = await new Client().get(s.url, {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
+          "Referer": "https://manhua.iqiyi.com/comic/index",
+          "Accept-Language": "zh-CN,zh;q=0.9",
+          "md5": s.md5
+        });
+        const code = Number(res.statusCode || 200);
+        if (code >= 400) throw new Error("爱奇艺动漫：接口返回 HTTP " + code + "：" + path);
+        let j;
+        try { j = JSON.parse(res.body || "{}"); } catch (e) { throw new Error("爱奇艺动漫：接口返回非 JSON：" + path); }
+        if (j.code !== "A00000" && j.code !== "A00001") {
+          throw new Error("爱奇艺动漫：接口错误 " + (j.code || "") + " " + (j.msg || "") + "：" + path);
+        }
+        return j.data || {};
+      } catch (e) { lastErr = e; }
     }
-    return j.data || {};
+    throw lastErr;
   }
 
   _toItem(c) {
@@ -219,7 +233,7 @@ class DefaultExtension extends MProvider {
       if (!ep.episodeId) continue;
       episodes.push({
         name: (ep.episodeTitle || ("第" + (ep.episodeOrder || (i + 1)) + "话")),
-        url: this.getBaseUrl() + "/read/1.0/batchRead?comicId=" + encodeURIComponent(strId) + "&episodeId=" + encodeURIComponent(ep.episodeId) + "&order=0&size=0",
+        url: this._apiHost() + "/read/1.0/batchRead?comicId=" + encodeURIComponent(strId) + "&episodeId=" + encodeURIComponent(ep.episodeId) + "&order=0&size=0",
         dateUpload: ep.firstOnlineTime ? Number(ep.firstOnlineTime) : null,
         scanlator: null
       });
@@ -256,6 +270,8 @@ class DefaultExtension extends MProvider {
       const it = arr[i];
       let u = it.imageUrl || "";
       if (it.imageUrlList && it.imageUrlList[1] && it.imageUrlList[1].imageUrl) u = it.imageUrlList[1].imageUrl;
+      // v0.0.2：图片 http:// 优先升级 https://（防明文拦截）。
+      if (u.indexOf("http://") === 0) u = "https://" + u.substring(7);
       if (u) pics.push(u);
     }
     if (pics.length === 0) throw new Error("爱奇艺动漫：本话无图片");
@@ -271,7 +287,7 @@ class DefaultExtension extends MProvider {
       "key": "domain_url",
       "editTextPreference": {
         "title": "Url",
-        "summary": "爱奇艺漫画接口地址（换域名时改这里）",
+        "summary": "接口地址固定为 comic.iqiyi.com（不要改成 manhua.iqiyi.com，会 404）",
         "value": "https://comic.iqiyi.com",
         "dialogTitle": "URL",
         "dialogMessage": ""

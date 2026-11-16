@@ -7,7 +7,7 @@ const mangayomiSources = [{
   "typeSource": "single",
   "itemType": 0,
   "isNsfw": false,
-  "version": "0.0.1",
+  "version": "0.0.2",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "manhuaren.js"
@@ -34,8 +34,15 @@ class DefaultExtension extends MProvider {
     };
   }
 
-  getHeaders() {
-    return this.headers();
+  // v0.0.2：cdndm5 图片强制要求章节页 Referer（首页 Referer 会 403）。
+  // 图片 URL 自带 cid 参数，拼出章节页 https://www.manhuaren.com/m{cid}/ 当 Referer。
+  getHeaders(url) {
+    const h = this.headers();
+    try {
+      const m = String(url || "").match(/[?&]cid=(\d+)/);
+      if (m) h["Referer"] = this.getBaseUrl() + "/m" + m[1] + "/";
+    } catch (_) { /* 回退首页 Referer */ }
+    return h;
   }
 
   fullUrl(url) {

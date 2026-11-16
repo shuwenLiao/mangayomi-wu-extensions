@@ -7,7 +7,7 @@ const mangayomiSources = [{
   "typeSource": "single",
   "itemType": 0,
   "isNsfw": false,
-  "version": "0.0.1",
+  "version": "0.0.2",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "92mh.js"
@@ -53,21 +53,34 @@ class DefaultExtension extends MProvider {
   }
 
   async load(url) {
-    const res = await new Client().get(url, this.headers(false));
-    const code = Number(res.statusCode || 200);
-    if (code === 404 || code === 410) throw new Error("92漫画：页面不存在（HTTP " + code + "）：" + url);
-    if (code >= 400) throw new Error("92漫画：网站返回 HTTP " + code + "：" + url);
-    return res.body || "";
+    // v0.0.2：失败重试一次再抛错。
+    let lastErr = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const res = await new Client().get(url, this.headers(false));
+        const code = Number(res.statusCode || 200);
+        if (code === 404 || code === 410) throw new Error("92漫画：页面不存在（HTTP " + code + "）：" + url);
+        if (code >= 400) throw new Error("92漫画：网站返回 HTTP " + code + "：" + url);
+        return res.body || "";
+      } catch (e) { lastErr = e; }
+    }
+    throw lastErr;
   }
 
   async postJson(url, body) {
-    const res = await new Client().post(url, this.headers(true), body);
-    const code = Number(res.statusCode || 200);
-    if (code >= 400) throw new Error("92漫画：接口返回 HTTP " + code + "：" + url);
-    let j;
-    try { j = JSON.parse(res.body || "{}"); }
-    catch (e) { throw new Error("92漫画：接口返回不是 JSON：" + url); }
-    return j;
+    let lastErr = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const res = await new Client().post(url, this.headers(true), body);
+        const code = Number(res.statusCode || 200);
+        if (code >= 400) throw new Error("92漫画：接口返回 HTTP " + code + "：" + url);
+        let j;
+        try { j = JSON.parse(res.body || "{}"); }
+        catch (e) { throw new Error("92漫画：接口返回不是 JSON：" + url); }
+        return j;
+      } catch (e) { lastErr = e; }
+    }
+    throw lastErr;
   }
 
   async getPopular(page) {
@@ -106,6 +119,7 @@ class DefaultExtension extends MProvider {
   }
 
   async search(query, page, filters) {
+    // v0.0.2：已实测搜索 API 忽略 page 参数（page=1 与 page=2 返回完全相同结果），故单页。
     if (page > 1) return { list: [], hasNextPage: false };
     const j = await this.postJson(this._apiHost() + "/comic/search", "keywords=" + encodeURIComponent(query));
     const items = (j && j.items) || [];
@@ -179,7 +193,8 @@ class DefaultExtension extends MProvider {
     const hostM = html.match(/var chapterImageHost\s*=\s*"([^"]+)"/);
     const arrM = html.match(/var chapterImages\s*=\s*\[([\s\S]*?)\];/);
     if (!arrM) throw new Error("92漫画：章节页找不到图片数据（chapterImages）");
-    const host = hostM ? hostM[1] : "";
+    // v0.0.2：host 为空时回退站首页拼接；图片 http:// 优先升级 https://（防明文拦截）。
+    const host = hostM ? hostM[1] : this.getBaseUrl();
     const out = [];
     const seen = {};
     const re = /"((?:\\.|[^"\\])*)"/g;
@@ -187,7 +202,8 @@ class DefaultExtension extends MProvider {
     while ((m = re.exec(arrM[1])) !== null) {
       let p = m[1].replace(/\\\//g, "/");
       if (!p) continue;
-      const u = p.indexOf("http") === 0 ? p : (host + p);
+      let u = p.indexOf("http") === 0 ? p : (host + p);
+      if (u.indexOf("http://") === 0) u = "https://" + u.substring(7);
       if (!seen[u]) { seen[u] = true; out.push(u); }
     }
     if (out.length === 0) throw new Error("92漫画：本话无图片");

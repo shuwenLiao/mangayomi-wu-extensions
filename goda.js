@@ -7,7 +7,7 @@ const mangayomiSources = [{
   "typeSource": "single",
   "itemType": 0,
   "isNsfw": false,
-  "version": "0.0.1",
+  "version": "0.0.2",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "goda.js"
@@ -69,8 +69,15 @@ class DefaultExtension extends MProvider {
   }
 
   async loadJson(url) {
-    const text = await this.load(url);
-    return JSON.parse(text);
+    // v0.0.2：失败重试一次（v2.apikk.top 偶发波动时有用）。
+    let lastErr = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const text = await this.load(url);
+        return JSON.parse(text);
+      } catch (e) { lastErr = e; }
+    }
+    throw lastErr;
   }
 
   // 列表页卡片：<a href="/manga/<slug>">…<img src="<cover>">…<h3 class="cardtitle">标题</h3>
@@ -123,7 +130,9 @@ class DefaultExtension extends MProvider {
   async getDetail(url) {
     const html = await this.load(url);
     const midM = html.match(/data-mid="(\d+)"/);
-    if (!midM) throw new Error("GoDa漫画：详情页找不到作品 ID");
+    // v0.0.2：data-mid 缺失时错误带上页面 URL，便于定位是站方改版还是链接不对
+    // （slug 无法直接反查 mid，不做假回退）。
+    if (!midM) throw new Error("GoDa漫画：详情页找不到作品 ID：" + url);
     const mid = midM[1];
     const apiHostM = html.match(/data-api-host="([^"]+)"/);
     const apiHost = apiHostM ? apiHostM[1].replace(/\/$/, "") : this.getApiHost();
@@ -284,7 +293,9 @@ class DefaultExtension extends MProvider {
     if (!data || !data.status || !data.data || !data.data.info || !data.data.info.images)
       throw new Error("GoDa漫画：章节图片接口返回异常");
     const images = data.data.info.images;
-    const arr = this.decodeChapterImages(images.images);
+    let arr;
+    try { arr = this.decodeChapterImages(images.images); }
+    catch (e) { throw new Error("GoDa漫画：章节图片解码失败（line=" + images.line + "，host=" + (images.line === 2 ? "c-nd2" : "c-nd3") + "）：" + e.message); }
     const host = images.line === 2 ? "https://c-nd2-1.6wm.top" : "https://c-nd3-1.6wm.top";
     arr.sort(function (a, b) { return (a.order || 0) - (b.order || 0); });
     const urls = [];
