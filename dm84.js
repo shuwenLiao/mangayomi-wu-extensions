@@ -7,7 +7,7 @@ const mangayomiSources = [{
   "typeSource": "single",
   "itemType": 1,
   "isNsfw": false,
-  "version": "0.0.2",
+  "version": "0.0.3",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "dm84.js"
@@ -15,9 +15,8 @@ const mangayomiSources = [{
 
 // DM84（动漫巴士 dmbus.cc）。搜索/详情/剧集都是静态 HTML，可直接解析；
 // 播放页没有直链，只嵌了一个解析器 iframe（hhjx.hhplayer.com/?url=<hex token>），
-// token 需服务端解析，静态拿不到直链——改走内置浏览器：
-// 让解析器页跑完 JS，从 <video> 上读最终直链（并主动触发播放，
-// 因为后台 WebView 默认禁自动播放，光等 currentSrc 可能一直是空的）。
+// v0.0.3：先静态 POST 解析器 /api/parse 拿直链（bootstrap 的 url/t/key，不带 ts_key），
+// 再兜底旧的内置浏览器路线（解析器页常被 Cloudflare 拦，WebView 返回空）。
 
 const DM84_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
@@ -282,8 +281,49 @@ class DefaultExtension extends MProvider {
     }
   }
 
+  // v0.0.3：静态调解析器 /api/parse 拿直链，不走后台 WebView。
+  // 解析器页含 window.__HHJX_BOOTSTRAP__={url,t,key,ts_key,...}，
+  // POST {url,t,key,client_fallback:false}（不带 ts_key）到 <parser origin>/api/parse，
+  // 返回 {code:200, url:<cibn-edge 直链 m3u8>}，302 到上游真实 HLS。
+  // 签名有时效，播放时现取现用，不缓存；失败返回 ""，由调用方走旧 WebView 兜底。
+  async parseViaApi(playUrl, body) {
+    try {
+      const iframe = body.match(/<iframe[^>]*src="([^"]*hhjx[^"]*)"/i) ||
+                     body.match(/<iframe[^>]*src="([^"]+)"/i);
+      if (!iframe) return "";
+      const parserUrl = iframe[1].replace(/&amp;/g, "&");
+      if (parserUrl.indexOf("hhjx") === -1 && parserUrl.indexOf("hhplayer") === -1) return "";
+      const pRes = await new Client().get(parserUrl, {
+        "User-Agent": DM84_UA,
+        "Accept": "text/html,application/xhtml+xml",
+        "Referer": playUrl
+      });
+      const pHtml = pRes.body || "";
+      const bsM = pHtml.match(/window\.__HHJX_BOOTSTRAP__\s*=\s*(\{.*?\});/);
+      if (!bsM) return "";
+      let bs;
+      try { bs = JSON.parse(bsM[1]); } catch (_) { return ""; }
+      if (!bs.url || !bs.t || !bs.key) return "";
+      const origin = parserUrl.split("?")[0].replace(/\/$/, "");
+      const res = await new Client().post(origin + "/api/parse", {
+        "User-Agent": DM84_UA,
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "Referer": parserUrl
+      }, JSON.stringify({ url: bs.url, t: bs.t, key: bs.key, client_fallback: false }));
+      let data;
+      try { data = JSON.parse(res.body || ""); } catch (_) { return ""; }
+      if (!data || data.code !== 200 || !data.url) return "";
+      if (data.url.indexOf(".m3u8") === -1 && data.url.indexOf(".mp4") === -1) return "";
+      return data.url;
+    } catch (_) {
+      return "";
+    }
+  }
+
   async getVideoList(url) {
-    const res = await new Client().get(this.fullUrl(url), this.headers());
+    const playUrl = this.fullUrl(url);
+    const res = await new Client().get(playUrl, this.headers());
     const body = res.body || "";
     const found = [];
     const seen = {};
@@ -301,7 +341,14 @@ class DefaultExtension extends MProvider {
       }
     }
     if (found.length > 0) return found;
-    // 播放页只嵌解析器 iframe（hhjx.hhplayer.com/?url=<hex token>）
+    // v0.0.3：静态 POST 解析器 /api/parse 拿直链（不走 WebView；
+    // 手机上解析器页常被 Cloudflare 拦，WebView 路线返回空）
+    const apiUrl = await this.parseViaApi(playUrl, body);
+    if (apiUrl) {
+      return [{ url: apiUrl, originalUrl: apiUrl, quality: "Origin",
+        headers: { "User-Agent": DM84_UA, "Referer": playUrl } }];
+    }
+    // 兜底：旧 WebView 路线
     let parserUrl = "";
     const iframe = body.match(/<iframe[^>]*src="([^"]*hhjx[^"]*)"/i) ||
                    body.match(/<iframe[^>]*src="([^"]+)"/i);
