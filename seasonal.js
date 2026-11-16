@@ -7,13 +7,29 @@ const mangayomiSources = [{
 "typeSource": "single",
 "itemType": 1,
 "isNsfw": false,
-"version": "0.0.4",
+"version": "0.0.5",
 "dateFormat": "",
 "dateFormatLocale": "",
 "pkgPath": "seasonal.js"
 }];
 
 // 新番导视 v0.0.4（本季新番资讯指南 + PV + 按季度翻）。
+// v0.0.5 修复（吴手机实测 2026-11-15：0.0.3 的 Referer 加上后 PV 还是转圈 00:00 播不了；
+// 新番导视还报过 api.bgm.tv/calendar TLS 握手失败，列表直接打不开）：
+// (1) 根因：extractBiliDirect 调 evaluateJavascriptViaWebview 时把脚本当裸字符串传，
+// 仓库里其它 10 个用同一桥的扩展（age/aafun/dm84/fqdm/lmm/ani/mangarank/pimpbunny/stripchat）
+// 全是传 [script] 数组——只有 seasonal 传裸字符串，桥收不到/不执行脚本，
+// 所以 WebView 直链提取永远返回 null，getVideoList 每次都走到兜底。改成传 [script]。
+// (2) 兜底改掉：以前提不到直链就把 B站视频页地址当视频 URL 交给播放器，
+// 页地址根本不是视频流，播放器只能一直转圈（吴手机两次实测都是这个症状）。
+// 现在提不到就返回 []（和 age.js 提不到直链时返回 [] 一个做法），不再给假视频地址，
+// 点开播不了就直接退出来，不要等转圈。
+// (3) 多一条提直链的路：WebView 提不到时再调 B站接口——先 view 拿 cid，再 playurl
+// （bvid+cid+q n=80）取 data.durl[0].url；服务器这边 view 接口回 412（2026-11-16 实测，
+// 不带 cid 的 playurl 只回 code -400），手机 IP 未必被拦，手机上可能通。
+// (4) Bangumi 日历拿不到时（TLS 握手失败/空列表），本季列表改走 giriGiriLove
+// 当季（vod_area+vod_year）兜底，评分走 enrichGGLRows（Bangumi 搜不到就只显示站内分），
+// 导视至少能打开，不再整页报错。详情页不受影响。
 // v0.0.4 修复（吴手机实测 2026-11-15：2026夏季榜单评分虚高，三个 10.0 一个 9.9）：
 // 往季列表原来只用 giriGiriLove 的 vod_score，它家打分特别水，动不动就 10.0。
 // 现在往季取 Bangumi 搜索评分当主评分：bgmSearchScore() 按番名调 Bangumi 搜索接口
@@ -61,8 +77,8 @@ const mangayomiSources = [{
 // PV 播放（吴要求"能直接播"）：
 // 首选原生播放：getVideoList 先用 evaluateJavascriptViaWebview 打开 B站视频页，
 // 从 window.__playinfo__ 里提直链（durl 或 dash 最高码率），提到了就返回直链，播放器直接播。
-// 兜底：提不到（B站拦了内置浏览器、或页面没 __playinfo__）就返回 B站视频页地址，
-// 点开后用播放器里的内置浏览器按钮看。
+// 兜底（v0.0.5 改了）：提不到直链就返回 []，不再把 B站视频页地址当视频 URL 交给播放器——
+// 页地址不是视频流，播放器只会一直转圈。播不了就退出来，不要等。
 // 注意：服务器这边 B站 view 接口和视频页都返回 412（疑似机房 IP 被拦），手机 IP 未必被拦，
 // 所以 WebView 提取在手机上可能行得通——不要因为服务器 412 就放弃这条路，
 // 但在没手机实测前不要声称能直接播。
@@ -632,9 +648,39 @@ async extractBiliDirect(pageUrl) {
 if (typeof evaluateJavascriptViaWebview!== "function") return null;
 const script = "(function(){var tries=0;var timer=setInterval(function(){tries++;var direct=null;try{var pi=window.__playinfo__;if(pi&&pi.data){var durl=pi.data.durl;if(durl&&durl.length&&durl[0].url){direct=durl[0].url;}else if(pi.data.dash&&pi.data.dash.video&&pi.data.dash.video.length){var vs=pi.data.dash.video.slice().sort(function(a,b){return (b.bandwidth||0)-(a.bandwidth||0);});direct=vs[0].baseUrl||vs[0].base_url||null;}}}catch(e){}if(direct||tries>24){clearInterval(timer);window.flutter_inappwebview.callHandler(\"setResponse\",JSON.stringify({direct:direct}));}},500);})()";
 try {
-const raw = await evaluateJavascriptViaWebview(pageUrl, this.biliHeaders(), script, 20);
+const raw = await evaluateJavascriptViaWebview(pageUrl, this.biliHeaders(), [script], 20);
 const d = JSON.parse(raw || "{}");
 if (d && d.direct) return String(d.direct);
+} catch (_) {}
+return null;
+}
+
+// B站 playurl 接口提直链（WebView 提不到时的第二条路，两步走）：
+// (1) view 接口拿 cid：GET https://api.bilibili.com/x/web-interface/view?bvid=BV...
+// → data.pages[0].cid；(2) playurl：GET .../x/player/playurl?bvid=&cid=&qn=80&fnval=0
+// → data.durl[0].url（progressive mp4，播放器能直接播）；没有 durl 再看 dash 最高码率。
+// 注意：playurl 不带 cid 会回 code -400，必须先拿 cid。服务器这边 view 接口回 412
+// （机房 IP 被拦，2026-11-16 实测），所以这条路在服务器上验不出来；手机 IP 未必被拦，
+// 手机上可能通；拿不到返回 null。
+async extractBiliDirectViaApi(pageUrl) {
+const m = String(pageUrl || "").match(/\/video\/(BV[0-9A-Za-z]+)/);
+if (!m) return null;
+try {
+const vres = await new Client().get("https://api.bilibili.com/x/web-interface/view?bvid=" + m[1], this.biliHeaders());
+const vd = JSON.parse(vres.body || "");
+const pages = (vd && vd.data && vd.data.pages) || [];
+if (!pages.length || !pages[0].cid) return null;
+const cid = pages[0].cid;
+const res = await new Client().get("https://api.bilibili.com/x/player/playurl?bvid=" + m[1] + "&cid=" + cid + "&qn=80&fnval=0&fnver=0&fourk=1", this.biliHeaders());
+const d = JSON.parse(res.body || "");
+const data = (d && d.data) || null;
+if (!data) return null;
+const durl = data.durl;
+if (durl && durl.length && durl[0].url) return String(durl[0].url);
+if (data.dash && data.dash.video && data.dash.video.length) {
+const vs = data.dash.video.slice().sort(function(a, b) { return (b.bandwidth || 0) - (a.bandwidth || 0); });
+if (vs[0].baseUrl || vs[0].base_url) return String(vs[0].baseUrl || vs[0].base_url);
+}
 } catch (_) {}
 return null;
 }
@@ -691,7 +737,12 @@ return this.textEpisodes(textOpts || {});
 async getPopular(page, filters) {
 const q = this.quarterFromFilters(filters);
 if (q.isCurrent) {
-const shows = await this.fetchCalendar();
+// v0.0.5：Bangumi 日历拿不到（吴手机 2026-11-15 报 api.bgm.tv/calendar TLS 握手失败，
+// 列表直接打不开）时，改走 giriGiriLove 当季兜底——至少列表能打开，
+// 评分走 enrichGGLRows（Bangumi 也被拦就只显示站内分）。
+let shows = [];
+try { shows = await this.fetchCalendar(); } catch (_) { shows = []; }
+if (shows && shows.length) {
 this.guideSort(shows);
 const items = [];
 for (const s of shows) {
@@ -699,6 +750,10 @@ items.push(this.toItem(s, null, false));
 if (items.length >= 60) break;
 }
 return { list: items, hasNextPage: false};
+}
+const rows = await this.fetchGGLQuarter(q.year, q.area);
+await this.enrichGGLRows(rows, 20);
+return { list: rows.slice(0, 60).map(r => this.toGGLItem(r)), hasNextPage: false};
 }
 const rows = await this.fetchGGLQuarter(q.year, q.area);
 await this.enrichGGLRows(rows, 20);
@@ -714,12 +769,19 @@ async getLatestUpdates(page, filters) {
 const q = this.quarterFromFilters(filters);
 if (q.isCurrent) {
 // “最新” = 今天播出的本季番，按在追人数排
-const shows = await this.fetchCalendar();
+// v0.0.5：Bangumi 日历拿不到时和 getPopular 一样走 giriGiriLove 当季兜底。
+let shows = [];
+try { shows = await this.fetchCalendar(); } catch (_) { shows = []; }
+if (shows && shows.length) {
 const jsDay = new Date().getDay();
 const bgmDay = jsDay === 0? 7: jsDay;
 const today = shows.filter(s => s.air_weekday === bgmDay);
 today.sort((a, b) => (((b.collection && b.collection.doing) || 0) - ((a.collection && a.collection.doing) || 0)));
 return { list: today.map(s => this.toItem(s, null, false)), hasNextPage: false};
+}
+const rows = await this.fetchGGLQuarter(q.year, q.area);
+await this.enrichGGLRows(rows, 20);
+return { list: rows.slice(0, 60).map(r => this.toGGLItem(r)), hasNextPage: false};
 }
 // 往季没有"今天更新"，最新 = 该季度按 Bangumi 评分排（同 getPopular 的修正逻辑）
 const rows = await this.fetchGGLQuarter(q.year, q.area);
@@ -775,7 +837,7 @@ lines.push(this.verdict(bgm.score, bgm.total, null));
 }
 if (score) lines.push("站内分（仅供参考，偏高）：" + "giriGiriLove " + score.toFixed(1) + "分" + (info.vod_hits? (" · " + info.vod_hits + "次点击"): "") + (info.vod_remarks? (" · " + String(info.vod_remarks)): ""));
 lines.push("简介：" + String(info.vod_content || info.vod_blurb || "").replace(/<[^>]+>/g, "").trim());
-lines.push("选集里是本番的 PV（B站搜的），点开后先试直接播，播不了就点播放器里的内置浏览器看。");
+lines.push("选集里是本番的 PV（B站搜的），点开直接播；播不了就是 B站这次没给直链，退出来就行，不要一直等转圈。");
 const pvs = await this.fetchBiliPVs(name, bgm ? bgm.name : "", []);
 const newsParts = [];
 if (info.vod_remarks) newsParts.push(String(info.vod_remarks));
@@ -863,7 +925,7 @@ if (g) lines.push(g);
 }
 if (weekday) lines.push("每周" + weekday + "播出");
 lines.push("简介：" + intro);
-lines.push("选集里是本番的 PV（B站搜的），点开后先试直接播，播不了就点播放器里的内置浏览器看。");
+lines.push("选集里是本番的 PV（B站搜的），点开直接播；播不了就是 B站这次没给直链，退出来就行，不要一直等转圈。");
 lines.push("资讯来源：Bangumi 日历 + giriGiriLove，数据实时更新，新番一上架就能看到，比等导视视频更快。");
 const genre = [];
 try {
@@ -897,22 +959,23 @@ episodes: this.episodesFor(pvs, { sourceLine: srcLine, intro: intro, newsLine: n
 };
 }
 
-// PV 播放：首选 WebView 提直链（原生播）；提不到就返回 B站视频页（内置浏览器看）。
-// v0.0.3：返回的每个视频都带 headers（Referer: https://www.bilibili.com/ + 桌面 UA）——
-// B站直链没有 Referer 会被 CDN 拒掉，播放器一直转圈 00:00 播不了（吴手机实测 2026-11-15）。
-// 页地址那条也带 headers（无害；它本身不是视频流，点开还是得用播放器里的内置浏览器按钮看）。
-// 注意：服务器 B站页返回 412，直链提取在服务器上测不出来，只能在手机上验证。
+// PV 播放：WebView 提直链 → B站 playurl 接口提直链 → 都拿不到返回 []。
+// v0.0.5：不再把 B站视频页地址当视频 URL 返回——页地址不是视频流，播放器只会一直转圈
+// 00:00（吴手机 0.0.2/0.0.3 两次实测都是这个症状）；返回 [] 是干净失败，点开不转圈。
+// v0.0.3 的 headers 还在：返回的直链都带 Referer + 桌面 UA，B站 CDN 没 Referer 会拒掉。
+// 注意：服务器 B站页/接口返回 412，直链提取在服务器上测不出来，只能在手机上验证。
 async getVideoList(url) {
 const pageUrl = String(url || "").trim();
 if (!pageUrl) return [];
 // 文字项（改编来源/官方简介/最新动态）：没有视频，返回空，不报错、不给假链接
 if (pageUrl.indexOf("text:") === 0) return [];
 const headers = this.biliHeaders();
-const direct = await this.extractBiliDirect(pageUrl);
+let direct = await this.extractBiliDirect(pageUrl);
+if (!direct) direct = await this.extractBiliDirectViaApi(pageUrl);
 if (direct) {
 return [{ url: direct, quality: "PV直链", originalUrl: pageUrl, headers: headers}];
 }
-return [{ url: pageUrl, quality: "PV · 内置浏览器", originalUrl: pageUrl, headers: headers}];
+return [];
 }
 
 getFilterList() {
