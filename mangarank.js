@@ -7,7 +7,7 @@ const mangayomiSources = [{
   "typeSource": "single",
   "itemType": 0,
   "isNsfw": false,
-  "version": "0.0.2",
+  "version": "0.0.3",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "mangarank.js"
@@ -438,6 +438,54 @@ class DefaultExtension extends MProvider {
   // 的 data-src，章节目录不在静态 HTML 里（只有“開始閱讀”一个链接）。
   // 所以只返回标题/封面/状态/类型，章节列表为空，说明去「拷贝漫画」源
   // 搜同名看正文。
+
+  // v0.0.3：拷贝漫画章节/图片是 AES 加密的，照抄 m2k3a copymanga.js 的解码
+  //（cryptoHandler 是 Mangayomi 桥提供的全局，拷贝漫画源一直在用）。
+  base64encode(str) {
+    const base64EncodeChars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    var out, i, len;
+    var c1, c2, c3;
+    len = str.length;
+    i = 0;
+    out = "";
+    while (i < len) {
+      c1 = str.charCodeAt(i++) & 0xff;
+      if (i == len) {
+        out += base64EncodeChars.charAt(c1 >> 2);
+        out += base64EncodeChars.charAt((c1 & 0x3) << 4);
+        out += "==";
+        break;
+      }
+      c2 = str.charCodeAt(i++);
+      if (i == len) {
+        out += base64EncodeChars.charAt(c1 >> 2);
+        out += base64EncodeChars.charAt(((c1 & 0x3) << 4) | ((c2 & 0xF0) >> 4));
+        out += base64EncodeChars.charAt((c2 & 0xF) << 2);
+        out += "=";
+        break;
+      }
+      c3 = str.charCodeAt(i++);
+      out += base64EncodeChars.charAt(c1 >> 2);
+      out += base64EncodeChars.charAt(((c1 & 0x3) << 4) | ((c2 & 0xF0) >> 4));
+      out += base64EncodeChars.charAt(((c2 & 0xF) << 2) | ((c3 & 0xC0) >> 6));
+      out += base64EncodeChars.charAt(c3 & 0x3F);
+    }
+    return out;
+  }
+
+  decode(result) {
+    var iv = result.substring(0, 16);
+    result = result.replace(iv, "");
+    const bytes = [];
+    for (var i = 0; i < result.length; i = i + 2) {
+      bytes.push(parseInt(result.substr(i, 2), 16));
+    }
+    var charString = String.fromCharCode.apply(null, bytes);
+    const data = this.base64encode(charString);
+    const text = cryptoHandler(data, iv, "xxxmanga.woo.key", false);
+    return text;
+  }
+
   async getCopyDetail(url) {
     const res = await new Client().get("https://www.mangacopy.com" + url, {
       "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36",
@@ -466,21 +514,47 @@ class DefaultExtension extends MProvider {
     }
     const status = /已完結/.test(titleText) ? 1 : 0;
     const latestM = titleText.match(/第(\d+)话/);
+    // v0.0.3：章节目录走 /comicdetail/{slug}/chapters（和拷贝漫画源同一接口），
+    // 解码后展开；解不开就保持 0 章（不抛错，榜单本身还能看）。
+    const slug = String(url || "").split("/").filter(Boolean).pop() || "";
+    const episodes = [];
+    try {
+      const chRes = await new Client().get("https://www.mangacopy.com/comicdetail/" + slug + "/chapters", {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36"
+      });
+      const chText = JSON.parse(chRes.body || "{}")["results"] || "";
+      const chapterDatas = JSON.parse(this.decode(chText));
+      const list = (chapterDatas && chapterDatas.groups && chapterDatas.groups.default && chapterDatas.groups.default.chapters) || [];
+      for (const ch of list) {
+        if (!ch || !ch.id) continue;
+        episodes.push({ name: String(ch.name || "").trim() || ("第" + (episodes.length + 1) + "话"), url: slug + "|" + ch.id });
+      }
+      episodes.reverse();
+    } catch (_) { /* 解不开就 0 章，榜单照常显示 */ }
     return {
       name: name || url,
       imageUrl: cover,
-      description: "【拷贝漫画榜单】本条来自拷贝漫画排行榜（漫画柜被拦时的备用榜）。"
-        + (latestM ? "最新第" + latestM[1] + "话。" : "")
-        + "章节目录是拷贝漫画 JS 动态加载的，本源不展开；读正文请去「拷贝漫画」源搜同名漫画。",
+      description: "【拷贝漫画榜单】本条来自拷贝漫画排行榜（漫画柜被拦时的备用榜）。" + (latestM ? "最新第" + latestM[1] + "话。" : "") + (episodes.length ? "" : "章节目录暂时拉不到。"),
       genre: genres,
       author: "",
       status: status,
-      episodes: [],
-      chapters: []
+      episodes: episodes,
+      chapters: episodes
     };
   }
 
   async getPageList(url) {
+    // v0.0.3：拷贝漫画章节（slug|id）走 contentKey 解码（照抄 copymanga.js）。
+    const parts = String(url || "").split("|");
+    if (parts.length === 2 && parts[0] && parts[1]) {
+      const res = await new Client().get("https://www.mangacopy.com/comic/" + parts[0] + "/chapter/" + parts[1], {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36"
+      });
+      const m = (res.body || "").match(/contentKey="(.*)"/);
+      if (!m) throw new Error("章节图片取不到（contentKey 缺失）。");
+      const results = JSON.parse(this.decode(m[1]));
+      return results.map(e => e["url"]);
+    }
     // 2026-11-15 实测：漫画柜章节页是 8KB 空壳，图片地址不在静态 HTML 里，
     // 是外部 core_*.js 动态加载的；m2k3a 老代码的 packed-JS 解码在当前页面上
     // 找不到 packed 段，解不出来。先明说，不让用户点开看空白。

@@ -7,7 +7,7 @@ const mangayomiSources = [{
   "typeSource": "single",
   "itemType": 1,
   "isNsfw": false,
-  "version": "0.0.1",
+  "version": "0.0.2",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "lmm.js"
@@ -104,10 +104,64 @@ class DefaultExtension extends MProvider {
     return await this.fetchSuggest(query || "");
   }
 
+
+  // v0.0.2：详情页直连被拦（手机上 0 集）时的兜底：内置浏览器打开详情页，
+  // 等 /play/ 剧集链接出现后把整页 HTML 交回来，再用同一套正则解析。
+  async loadDetailViaWebview(url) {
+    if (typeof evaluateJavascriptViaWebview !== "function") return "";
+    const script = `(function(){
+      if (window.__lmmDetailRead) return;
+      window.__lmmDetailRead = true;
+      var done = false, started = Date.now(), interval;
+      function send(value) {
+        if (done) return;
+        done = true;
+        if (interval) clearInterval(interval);
+        window.flutter_inappwebview.callHandler("setResponse", JSON.stringify(value));
+      }
+      function poll() {
+        var body = document.body;
+        if (body) {
+          var markup = document.documentElement.outerHTML || "";
+          var guarded = /Just a moment|Checking your browser|Attention Required/i.test(String(document.title || "")) ||
+            /cf-challenge|challenge-platform|cf-turnstile|_cf_chl/i.test(markup);
+          if (!guarded && /\/play\/\d+_\d+_\d+\.html/.test(markup)) {
+            send({html: markup, error: ""});
+            return;
+          }
+        }
+        if (Date.now() - started > 14500) send({html: "", error: "timeout"});
+      }
+      interval = setInterval(poll, 500);
+      poll();
+    })();`;
+    let result;
+    try {
+      result = await evaluateJavascriptViaWebview(url, this.headers(), [script], 18);
+    } catch (_) {
+      return "";
+    }
+    try {
+      const data = JSON.parse(String(result || ""));
+      return (data && data.html) ? data.html : "";
+    } catch (_) {
+      return "";
+    }
+  }
+
   async getDetail(url) {
     const id = String(url || "").replace(/[^0-9]/g, "");
-    const res = await new Client().get(LMM_API + "/index.php/vod/detail/id/" + id + ".html", this.headers());
-    const html = res.body || "";
+    const detailUrl = LMM_API + "/index.php/vod/detail/id/" + id + ".html";
+    let html = "";
+    try {
+      const res = await new Client().get(detailUrl, this.headers());
+      html = res.body || "";
+    } catch (_) { html = ""; }
+    // v0.0.2：直连被拦（手机上 0 集）时走 WebView 兜底
+    if (!/\/play\/\d+_\d+_\d+\.html/.test(html)) {
+      const wv = await this.loadDetailViaWebview(detailUrl);
+      if (wv) html = wv;
+    }
     let name = "";
     const titleM = /<title>([^<]+)<\/title>/i.exec(html);
     if (titleM) {
