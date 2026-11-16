@@ -7,7 +7,7 @@ const mangayomiSources = [{
   "typeSource": "single",
   "itemType": 1,
   "isNsfw": false,
-  "version": "0.0.1",
+  "version": "0.0.2",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "girigirilove.js"
@@ -96,14 +96,67 @@ class DefaultExtension extends MProvider {
     return await this.fetchList(query || "");
   }
 
+
+  // v0.0.2：详情接口直连被拦（手机上 0 集、无描述）时的兜底。
+  // 内置浏览器是真浏览器，能过 Cloudflare/验证；API 返回 JSON 文本，
+  // 浏览器会把它当文本显示在 body 里，轮询读 document.body.innerText 拿回来。
+  async loadDetailJsonViaWebview(id) {
+    if (typeof evaluateJavascriptViaWebview !== "function") return "";
+    const url = GG_API + "/get_detail?vod_id=" + id;
+    const script = `(function(){
+      if (window.__gglDetailRead) return;
+      window.__gglDetailRead = true;
+      var done = false, started = Date.now(), interval;
+      function send(value) {
+        if (done) return;
+        done = true;
+        if (interval) clearInterval(interval);
+        window.flutter_inappwebview.callHandler("setResponse", JSON.stringify(value));
+      }
+      function poll() {
+        var txt = "";
+        try {
+          var b = document.body;
+          txt = b ? (b.innerText || b.textContent || "") : "";
+        } catch (e) { txt = ""; }
+        if (txt && txt.indexOf("vod_name") !== -1) { send({json: txt}); return; }
+        if (Date.now() - started > 14000) { send({json: ""}); return; }
+      }
+      interval = setInterval(poll, 500);
+      poll();
+    })()`;
+    let result;
+    try {
+      result = await evaluateJavascriptViaWebview(url, this.headers(), [script], 18);
+    } catch (_) {
+      return "";
+    }
+    try {
+      const data = JSON.parse(String(result || ""));
+      return (data && data.json) ? data.json : "";
+    } catch (_) {
+      return "";
+    }
+  }
+
   async getDetail(url) {
     const id = String(url || "").replace(/[^0-9]/g, "");
-    const res = await new Client().get(GG_API + "/get_detail?vod_id=" + id, this.headers());
     let info = null;
     try {
+      const res = await new Client().get(GG_API + "/get_detail?vod_id=" + id, this.headers());
       const data = JSON.parse(res.body || "");
       info = (data && data.info) ? data.info : null;
     } catch (_) { info = null; }
+    // 直连拿不到（手机上 0 集）时走 WebView 兜底：内置浏览器能过验证
+    if (!info) {
+      const raw = await this.loadDetailJsonViaWebview(id);
+      if (raw) {
+        try {
+          const data = JSON.parse(raw);
+          info = (data && data.info) ? data.info : null;
+        } catch (_) { info = null; }
+      }
+    }
     if (!info) {
       return { name: "", imageUrl: "", description: "", genre: [], status: 3, episodes: [] };
     }

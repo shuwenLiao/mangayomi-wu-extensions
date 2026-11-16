@@ -7,7 +7,7 @@ const mangayomiSources = [{
   "typeSource": "single",
   "itemType": 1,
   "isNsfw": false,
-  "version": "0.0.1",
+  "version": "0.0.2",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "aafun.js"
@@ -166,8 +166,19 @@ class DefaultExtension extends MProvider {
   }
 
   async getDetail(url) {
-    const res = await new Client().get(this.fullUrl(url), this.headers());
-    const html = res.body || "";
+    let html = "";
+    try {
+      const res = await new Client().get(this.fullUrl(url), this.headers());
+      html = res.body || "";
+    } catch (_) { html = ""; }
+    // v0.0.2：直连被拦（手机上 0 集、无描述）时走 WebView 兜底，
+    // 复用 loadListViaWebview，等剧集列表出现再读 HTML。
+    let listM = /<ul[^>]*id="hl-plays-list"[^>]*>([\s\S]*?)<\/ul>/i.exec(html) ||
+                /<ul[^>]*class="[^"]*hl-plays-list[^"]*"[^>]*>([\s\S]*?)<\/ul>/i.exec(html);
+    if (!listM) {
+      const wv = await this.loadListViaWebview(this.fullUrl(url), "ul#hl-plays-list, ul.hl-plays-list");
+      if (wv) html = wv;
+    }
     let name = "";
     const t = /<title>([^<]+)<\/title>/i.exec(html);
     if (t) name = t[1].replace(/《|》/g, "").split("番剧")[0].split("高清")[0].trim();
@@ -179,8 +190,10 @@ class DefaultExtension extends MProvider {
     if (meta) description = this.fixText(meta[1]);
     // 只取第一个播放列表（线路1），避免多线路重复
     const eps = [];
-    const listM = /<ul[^>]*id="hl-plays-list"[^>]*>([\s\S]*?)<\/ul>/i.exec(html) ||
-                  /<ul[^>]*class="[^"]*hl-plays-list[^"]*"[^>]*>([\s\S]*?)<\/ul>/i.exec(html);
+    if (!listM) {
+      listM = /<ul[^>]*id="hl-plays-list"[^>]*>([\s\S]*?)<\/ul>/i.exec(html) ||
+              /<ul[^>]*class="[^"]*hl-plays-list[^"]*"[^>]*>([\s\S]*?)<\/ul>/i.exec(html);
+    }
     if (listM) {
       const re = /<a[^>]*href="([^"]+)"[^>]*>([^<]+)<\/a>/gi;
       let a;

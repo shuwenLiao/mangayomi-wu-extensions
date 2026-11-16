@@ -7,7 +7,7 @@ const mangayomiSources = [{
   "typeSource": "single",
   "itemType": 1,
   "isNsfw": false,
-  "version": "0.0.4",
+  "version": "0.0.5",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "age.js"
@@ -211,8 +211,20 @@ class DefaultExtension extends MProvider {
   }
 
   async getDetail(url) {
-    const res = await new Client().get(this.fullUrl(url), this.headers());
-    const doc = new Document(res.body);
+    let body = "";
+    try {
+      const res = await new Client().get(this.fullUrl(url), this.headers());
+      body = res.body || "";
+    } catch (_) { body = ""; }
+    // v0.0.5：直连被拦（手机上 0 集、无描述）时走 WebView 兜底，
+    // 复用 loadListViaWebview（等 div.tab-pane 出现再读 HTML）。
+    let doc = new Document(body);
+    let pane = doc.selectFirst("div.tab-pane");
+    if (!pane) {
+      const html = await this.loadListViaWebview(this.fullUrl(url), "div.tab-pane");
+      if (html) doc = new Document(html);
+    }
+    pane = doc.selectFirst("div.tab-pane");
     const titleEl = doc.selectFirst("title");
     let name = titleEl ? (titleEl.text || "") : "";
     name = name.split(" - ")[0].trim();
@@ -222,7 +234,6 @@ class DefaultExtension extends MProvider {
     const description = meta ? this.fixText(meta.attr("content") || "") : "";
     // 只取默认（第一个）播放源的剧集，避免 8 个源重复
     const eps = [];
-    const pane = doc.selectFirst("div.tab-pane");
     if (pane) {
       const links = pane.select("ul.video_detail_episode li a");
       for (const a of links) {
