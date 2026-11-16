@@ -7,7 +7,7 @@ const mangayomiSources = [{
   "typeSource": "single",
   "itemType": 1,
   "isNsfw": false,
-  "version": "0.0.1",
+  "version": "0.0.2",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "fentiny.js"
@@ -75,6 +75,49 @@ class DefaultExtension extends MProvider {
     return { list: items, hasNextPage: false };
   }
 
+
+  // 判断 body 是否 Cloudflare 拦截页
+  cfBlocked(body) {
+    return /Just a moment|Attention Required|cf-chl/i.test(body || "");
+  }
+
+  // v0.0.2：搜索/详情常被 Cloudflare 拦（403），兜底用内置浏览器拉页面再解析。
+  async loadPageViaWebview(url, readyPattern) {
+    if (typeof evaluateJavascriptViaWebview !== "function") return "";
+    const script = `(function(){
+      if (window.__fentinyRead) return;
+      window.__fentinyRead = true;
+      var done = false, started = Date.now(), interval;
+      function send(value) {
+        if (done) return;
+        done = true;
+        if (interval) clearInterval(interval);
+        window.flutter_inappwebview.callHandler("setResponse", JSON.stringify(value));
+      }
+      function poll() {
+        var markup = "";
+        try { markup = document.documentElement ? document.documentElement.outerHTML : ""; } catch (e) {}
+        var guarded = /Just a moment|Checking your browser|Attention Required/i.test(String(document.title || "")) ||
+          /cf-challenge|challenge-platform|cf-turnstile|_cf_chl/i.test(markup);
+        if (!guarded && markup.length > 5000 && ${readyPattern}.test(markup)) {
+          send({html: markup, error: ""});
+          return;
+        }
+        if (Date.now() - started > 14500) send({html: "", error: "timeout"});
+      }
+      interval = setInterval(poll, 500);
+      poll();
+    })();`;
+    let result;
+    try {
+      result = await evaluateJavascriptViaWebview(url, this.headers(), [script], 18);
+    } catch (_) { return ""; }
+    try {
+      const data = JSON.parse(String(result || ""));
+      return (data && data.html) ? data.html : "";
+    } catch (_) { return ""; }
+  }
+
   async getPopular(page) {
     const res = await new Client().get(this.getBaseUrl() + "/", this.headers());
     return this.parseCards(res.body || "");
@@ -85,21 +128,34 @@ class DefaultExtension extends MProvider {
   }
 
   async search(query, page, filters) {
-    const res = await new Client().get(
-      this.getBaseUrl() + "/search.html?wd=" + encodeURIComponent(query),
-      this.headers()
-    );
-    const body = res.body || "";
-    // 该站搜索常被 Cloudflare 拦截（403 "Just a moment..."），直接报清楚，不返回空列表误导
-    if (res.statusCode === 403 || /Just a moment|Attention Required|cf-chl/i.test(body)) {
+    const searchUrl = this.getBaseUrl() + "/search.html?wd=" + encodeURIComponent(query);
+    let body = "";
+    try {
+      const res = await new Client().get(searchUrl, this.headers());
+      body = res.body || "";
+    } catch (_) { body = ""; }
+    // v0.0.2：该站搜索常被 Cloudflare 拦截（403），直连失败或空结果时走内置浏览器兜底
+    if (this.cfBlocked(body) || this.parseCards(body).list.length === 0) {
+      const wv = await this.loadPageViaWebview(searchUrl, /module-item|vodlist|searchlist/i);
+      if (wv) body = wv;
+    }
+    if (this.cfBlocked(body)) {
       throw new Error("桐溪观影厅：搜索被 Cloudflare 拦截，请先在首页浏览，或稍后再试");
     }
     return this.parseCards(body);
   }
 
   async getDetail(url) {
-    const res = await new Client().get(url, this.headers());
-    const body = res.body || "";
+    let body = "";
+    try {
+      const res = await new Client().get(url, this.headers());
+      body = res.body || "";
+    } catch (_) { body = ""; }
+    // v0.0.2：详情页被拦或无播放链接时走内置浏览器兜底
+    if (this.cfBlocked(body) || !/\/play\/\d+-\d+-1\.html/.test(body)) {
+      const wv = await this.loadPageViaWebview(url, /\/play\/\d+-\d+-1\.html/);
+      if (wv) body = wv;
+    }
     let name = "";
     const hm = body.match(/<h1[^>]*>([^<]+)<\/h1>/);
     if (hm) name = hm[1].trim();

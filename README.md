@@ -14,7 +14,7 @@
 
 `mangayomi://add-repo?repo_name=wu-extensions&repo_url=https://github.com/shuwenLiao/mangayomi-wu-extensions&anime_url=https://raw.githubusercontent.com/shuwenLiao/mangayomi-wu-extensions/main/anime_index.json`
 
-## 动漫（80 个源：m2k3a 全文 64 个 + 自己写的 16 个独有）
+## 动漫（80 个源：m2k3a 直接引用 60 个 + 收归自有并修复 4 个 + 自己写的 16 个独有）
 
 | 源 | 语言 | 内容 | 状态 |
 |---|---|---|---|
@@ -30,7 +30,7 @@
 | MX动漫 | 中文 | 日漫（dcc3.com） | 全部验证通过，播放页直接有 m3u8 |
 | 七色番 | 中文 | 日漫（7sefun.top） | 搜索/详情/剧集已验证；播放地址要解码跳转，最后一跳没验证 |
 | 红果短剧 | 中文 | 竖屏短剧（hongguoduanju.com） | 搜索/浏览/详情/分集全部实测通过；**每部剧只有前面几集（一般 5 集）能播，后面的集是红果付费墙，公开地址 404，扩展拿不到**；画质只有 360p；想看全集用桐溪观影厅（合集版）或电脑上的红果桌面端 |
-| 桐溪观影厅 | 中文 | 短剧镜像站（fentiny.com） | 浏览/详情/播放全部实测通过，m3u8 直链，标准 HLS 加密、播放器原生支持，**整部剧合并成一个“全集”视频，没有分集**；搜索可能被 Cloudflare 拦（手机端实测）；站里不一定有最新季（比如《重生，他只做创一代》只有第一季合集，没有第三季分集版） |
+| 桐溪观影厅 | 中文 | 短剧镜像站（fentiny.com） | 浏览/详情/播放全部实测通过，m3u8 直链，标准 HLS 加密、播放器原生支持，**整部剧合并成一个“全集”视频，没有分集**；搜索可能被 Cloudflare 拦（手机端实测）；**v0.0.2 修复**：搜索/详情被拦时走内置浏览器兜底；站里不一定有最新季（比如《重生，他只做创一代》只有第一季合集，没有第三季分集版） |
 | RedGifs | 全部 | 成人 GIF（NSFW，API v2 直链 MP4） | v0.0.2。临时 token 绑定 IP，手机换网/VPN 换出口会让 token 失效；**v0.0.2 改成 401 时最多换 3 次 token 重试**。吴 2026-11-15 02:36 反馈流行页“无结果”，疑似 VPN 换 IP 导致 token 反复失效，待手机实测。 |
 | PimpBunny | 全部 | 成人视频（pimpbunny.com，NSFW） | **内置浏览器（WebView）取页**：普通请求被 Bunny Shield 拦（403），视频地址不在页面源码里；列表/搜索/详情走 WebView 拿，**播放没有原生直链，点开视频后在内置浏览器里用网站自己的播放器看** |
 | Stripchat | 全部 | 成人直播（zh.stripchat.com，NSFW） | **内置浏览器（WebView）取页**：直播流是 MOUFLON 加密（要解密代理+手动密钥），扩展解不了；房间列表走 WebView 拿，**播放没有原生直链，点开房间后在内置浏览器里用网站自己的播放器看**（网站自己的播放器会解密）；未完成年龄验证前缩略图是模糊的 |
@@ -41,6 +41,8 @@
 | Wiflix | 法文 | 法国电影+剧集 | m2k3a 原版，直接引用 |
 
 AGE、MX动漫、七色番、DM84、aafun、giriGiriLove、ANi、FQDM、LMM、新番导视是新写的 JS 扩展（照 m2k3a 的樱花动漫扩展格式），规则来自 Kazumi 的 Predidit/KazumiRules（XPath 选择器 + 站点地址已实测）。另外 5 个是 m2k3a 仓库里现成的，index 里直接引用原地址，不用重复写。
+
+**2026-11-16 收归自有的 4 个 m2k3a 源（代码已复制到本仓库，index 改指本仓库，可自行修）：** 多多影音 v0.0.4（getDetail 直连被拦时走内置浏览器兜底；m2k3a 原版缺 quark/uc 提取器定义、调用必崩，已加保护，但看正片仍需夸克/UC 会员 Cookie）、极速资源 v0.0.3（getDetail 直连被拦时内置浏览器拉详情 API JSON 再解析）、蜜柑计划 v0.0.4（getDetail 直连被拦时走内置浏览器兜底读详情页 HTML）、360资源 v0.0.2（同极速资源）。另有 40 个 m2k3a Dart 源无法这样收（Dart 代码改不了），仍直接引用。
 
 ## 漫画（344 个源：m2k3a 333 + 自写 10 + 漫画排行榜 1）
 
