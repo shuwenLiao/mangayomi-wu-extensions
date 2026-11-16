@@ -7,7 +7,7 @@ const mangayomiSources = [{
 "typeSource": "single",
 "itemType": 1,
 "isNsfw": false,
-"version": "0.0.6",
+"version": "0.0.7",
 "dateFormat": "",
 "dateFormatLocale": "",
 "pkgPath": "seasonal.js"
@@ -404,13 +404,24 @@ let bestLcs = -1;
 const queries = [String(name || "").trim()];
 const short = this.shortenQuery(name);
 if (short && short !== queries[0]) queries.push(short);
-for (const q of queries) {
+for (let qi = 0; qi < queries.length; qi++) {
+const q = queries[qi];
 let list = [];
 try {
 const res = await new Client().get(BGM_API + "/search/subject/" + encodeURIComponent(q) + "?type=2&responseGroup=large&max_results=3", this.headers());
 const data = JSON.parse(res.body || "");
 list = (data && data.list) || [];
 } catch (_) { list = []; }
+// v0.0.7：第一次查询用的是完整标题，Bangumi 搜索本身会做译名匹配
+// （如“描绘直至生命尽头”->“画完这个再去死”），首个结果可信；
+// LCS 对纯译名会失效（两边没有 2 字以上公共片段），所以首个结果有有效评分（>=50 票）就直接采纳。
+if (qi === 0 && list.length > 0) {
+const first = list[0];
+const fr = (first && first.rating) || {};
+if (first && first.id && fr.score !== null && fr.score !== undefined && !isNaN(parseFloat(fr.score)) && fr.total !== null && fr.total !== undefined && parseInt(fr.total, 10) >= 50) {
+best = first; bestLcs = 99; break;
+}
+}
 for (const s of list) {
 if (!s || !s.id) continue;
 const candName = ((s.name_cn || "") + " " + (s.name || "")).trim();
@@ -438,20 +449,20 @@ this._bgmScoreCache[key] = out;
 return out;
 }
 
-// 往季列表评分修正：按点击量取前 count 名，批量查 Bangumi 评分挂到 row._bgm 上，
+// 往季列表评分修正：取前 count 名（60 = 全榜），批量查 Bangumi 评分挂到 row._bgm 上，
 // 再按"可信 Bangumi 评分（>=50 票）降序，没评分的按点击量"重排整张表。
-// 每批 5 个并行，批间 150ms——20 条约 4 秒；剩下没取分的行保持原样（站内分）。
+// 每批 8 个并行，批间 120ms——60 条约 4 秒；全榜都取分，取不到的才留原样。
 async enrichGGLRows(rows, count) {
 const n = count || 20;
 const byHits = [...rows].sort((a, b) => (parseInt(b.vod_hits || 0, 10) - parseInt(a.vod_hits || 0, 10)));
 const top = byHits.slice(0, n);
-for (let i = 0; i < top.length; i += 5) {
-const batch = top.slice(i, i + 5);
+for (let i = 0; i < top.length; i += 8) {
+const batch = top.slice(i, i + 8);
 await Promise.all(batch.map(async (r) => {
 try { r._bgm = await this.bgmSearchScore(String(r.vod_name || "")); }
 catch (_) { r._bgm = null; }
 }));
-if (i + 5 < top.length) await new Promise(res => setTimeout(res, 150));
+if (i + 8 < top.length) await new Promise(res => setTimeout(res, 120));
 }
 rows.sort((a, b) => {
 const ra = a._bgm, rb = b._bgm;
@@ -752,11 +763,11 @@ if (items.length >= 60) break;
 return { list: items, hasNextPage: false};
 }
 const rows = await this.fetchGGLQuarter(q.year, q.area);
-await this.enrichGGLRows(rows, 20);
+await this.enrichGGLRows(rows, 60);
 return { list: rows.slice(0, 60).map(r => this.toGGLItem(r)), hasNextPage: false};
 }
 const rows = await this.fetchGGLQuarter(q.year, q.area);
-await this.enrichGGLRows(rows, 20);
+await this.enrichGGLRows(rows, 60);
 const items = [];
 for (const r of rows) {
 items.push(this.toGGLItem(r));
@@ -780,12 +791,12 @@ today.sort((a, b) => (((b.collection && b.collection.doing) || 0) - ((a.collecti
 return { list: today.map(s => this.toItem(s, null, false)), hasNextPage: false};
 }
 const rows = await this.fetchGGLQuarter(q.year, q.area);
-await this.enrichGGLRows(rows, 20);
+await this.enrichGGLRows(rows, 60);
 return { list: rows.slice(0, 60).map(r => this.toGGLItem(r)), hasNextPage: false};
 }
 // 往季没有"今天更新"，最新 = 该季度按 Bangumi 评分排（同 getPopular 的修正逻辑）
 const rows = await this.fetchGGLQuarter(q.year, q.area);
-await this.enrichGGLRows(rows, 20);
+await this.enrichGGLRows(rows, 60);
 return { list: rows.slice(0, 60).map(r => this.toGGLItem(r)), hasNextPage: false};
 }
 
