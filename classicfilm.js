@@ -7,7 +7,7 @@ const mangayomiSources = [{
 "typeSource": "single",
 "itemType": 1,
 "isNsfw": false,
-"version": "0.0.2",
+"version": "0.0.3",
 "dateFormat": "",
 "dateFormatLocale": "",
 "pkgPath": "classicfilm.js"
@@ -35,7 +35,7 @@ const CLASSIC_MAX_YEAR = 1979;
 // 全片判定：B站视频片长至少 60 分钟才可能是正片（预告/解说/剪辑都短得多）。
 const FULL_FILM_MIN_SECONDS = 3600;
 // 排除词：这些标题即使片长够也不是正片本身（同步评论、解说、影评、预告、混剪）。
-const BILI_EXCLUDE = ["同步评论", "反应", "解说", "盘点", "预告", "剪辑", "混剪", "影评", "解析", "吐槽", "花絮", "幕后", "纪录片", "reaction", "react", "trailer", "review", "特别收录", "一起看", "放映室", "授权章节", "网盘", "夸克", "quark", "pan.", "微信", "加微", "云盘", "百度云", "阿里云", "资源分享", "免费观看", "简史", "合集全集", "完整版合集"];
+const BILI_EXCLUDE = ["同步评论", "反应", "解说", "盘点", "预告", "剪辑", "混剪", "影评", "解析", "吐槽", "花絮", "幕后", "纪录片", "reaction", "react", "trailer", "review", "特别收录", "一起看", "放映室", "授权章节", "网盘", "夸克", "quark", "pan.", "微信", "加微", "云盘", "百度云", "阿里云", "资源分享", "免费观看", "简史", "合集全集", "完整版合集", "中文配音", "国语配音", "国语版", "中配", "配音版", "中文版", "国语", "普通话配音", "中文对白", "国语对白", "国语发音"];
 
 class DefaultExtension extends MProvider {
 headers() {
