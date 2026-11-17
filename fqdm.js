@@ -7,7 +7,7 @@ const mangayomiSources = [{
   "typeSource": "single",
   "itemType": 1,
   "isNsfw": false,
-  "version": "0.0.3",
+  "version": "0.0.4",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "fqdm.js"
@@ -29,6 +29,10 @@ const FQDM_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (K
 class DefaultExtension extends MProvider {
   stringUTF8(text, d) {
     if (!d) return text;
+    // v0.0.3 fix: 桥已按 UTF-8 解出中文时（任一字符码 > 255），不再二次解码，否则标题变乱码
+    for (var j = 0; j < text.length; j++) {
+      if (text.charCodeAt(j) > 255) return text;
+    }
     var bytes = [];
     for (var i = 0; i < text.length; i++) bytes.push(text.charCodeAt(i));
     var charCodes = [];
