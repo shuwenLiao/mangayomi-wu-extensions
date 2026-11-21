@@ -1758,5 +1758,27 @@
     "additionalParams": "",
     "sourceCodeLanguage": 1,
     "notes": ""
+  },
+  {
+    "name": "Anime1.me",
+    "id": 4147149547,
+    "baseUrl": "https://anime1.me",
+    "lang": "zh-TW",
+    "typeSource": "single",
+    "iconUrl": "https://anime1.me/favicon-32x32.png",
+    "dateFormat": "",
+    "dateFormatLocale": "",
+    "isNsfw": false,
+    "hasCloudflare": false,
+    "sourceCodeUrl": "https://raw.githubusercontent.com/shuwenLiao/mangayomi-wu-extensions/main/anime1.js",
+    "apiUrl": "",
+    "version": "0.0.1",
+    "isManga": false,
+    "itemType": 1,
+    "isFullData": false,
+    "appMinVerReq": "0.5.0",
+    "additionalParams": "",
+    "sourceCodeLanguage": 1,
+    "notes": "繁中动画线上看；列表/搜索/详情静态，播放取 mp4 直链，需手机实测"
   }
 ]
