@@ -7,7 +7,7 @@ const mangayomiSources = [{
   "typeSource": "single",
   "itemType": 1,
   "isNsfw": false,
-  "version": "0.0.5",
+  "version": "0.0.6",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "dm84.js"
@@ -19,6 +19,10 @@ const mangayomiSources = [{
 // 再兜底旧的内置浏览器路线（解析器页常被 Cloudflare 拦，WebView 返回空）。
 // v0.0.5：播放页请求抛错不再外泄（WebView 兜底取 HTML）；/api/parse 失败重试一次；
 // 线路1 无果时自动试线路2；其余逻辑不变。
+// v0.0.6：节点 IP 被解析接口限流时，裸 HTTP 的 /api/parse 会失败，但真浏览器能播
+// （Webview 已验证）。新增“播放页 WebView 直取”：把播放页放进后台浏览器，像真浏览器
+// 一样等播放器拿到直链后取 <video> 的 src；API 路径失败后先走它，再走旧的解析器页
+// WebView；两处 WebView 超时都放宽到 60s（慢网也能等到直链出现）。
 
 const DM84_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
@@ -268,14 +272,87 @@ class DefaultExtension extends MProvider {
             return;
           }
         }
-        if (Date.now() - started > 17000) send({url: "", error: "timeout"});
+        if (Date.now() - started > 55000) send({url: "", error: "timeout"});
       }
       interval = setInterval(poll, 500);
       poll();
     })();`;
     let result;
     try {
-      result = await evaluateJavascriptViaWebview(parserUrl, this.headers(), [script], 20);
+      result = await evaluateJavascriptViaWebview(parserUrl, this.headers(), [script], 60);
+    } catch (err) {
+      return "";
+    }
+    try {
+      const data = JSON.parse(String(result || ""));
+      return (data && data.url) ? data.url : "";
+    } catch (_) {
+      return "";
+    }
+  }
+
+  // v0.0.6：把播放页放进后台浏览器，像真浏览器一样等播放器拿到直链后取 <video> 的 src。
+  // 真浏览器（Webview）已验证能播，说明播放页 + 解析器 + 直链整条链路是通的；
+  // 裸 HTTP 的 /api/parse 被节点 IP 限流时，这条浏览器路线不受影响。
+  // 轮询 55s（慢网也能等到），同时主动点播放按钮触发加载，并兜底扫页面里的直链。
+  async loadPlayPageVideo(playUrl) {
+    if (typeof evaluateJavascriptViaWebview !== "function") return "";
+    const script = String.raw`(function(){
+      if (window.__dm84PlayRead) return;
+      window.__dm84PlayRead = true;
+      var done = false, started = Date.now(), interval;
+      function send(value) {
+        if (done) return;
+        done = true;
+        if (interval) clearInterval(interval);
+        window.flutter_inappwebview.callHandler("setResponse", JSON.stringify(value));
+      }
+      function tryPlay() {
+        var videos = document.querySelectorAll("video");
+        for (var i = 0; i < videos.length; i++) {
+          try { videos[i].muted = true; var p = videos[i].play(); if (p && p.catch) p.catch(function(){}); } catch (e) {}
+        }
+        var btns = document.querySelectorAll(".artplayer-play, .art-icon-play, .art-play, .vjs-big-play-button, [class*='play-btn'], .play-btn");
+        for (var j = 0; j < btns.length; j++) {
+          try { btns[j].click(); } catch (e) {}
+        }
+      }
+      function poll() {
+        tryPlay();
+        var videos = document.querySelectorAll("video");
+        for (var i = 0; i < videos.length; i++) {
+          var v = videos[i];
+          var src = v.currentSrc || v.src || "";
+          if (!src) continue;
+          if (src.indexOf("adposter") !== -1) continue;
+          if (src.indexOf("kjjsaas-sh") !== -1) continue;
+          if (src.indexOf("blob:") === 0 || src.indexOf("data:") === 0) continue;
+          var dur = v.duration;
+          if (/\.m3u8(\?|$)/.test(src) || /\.mp4(\?|$)/.test(src) ||
+              src.indexOf("akamaized.net") !== -1 ||
+              (typeof dur === "number" && !isNaN(dur) && dur > 30)) {
+            send({url: src, error: ""});
+            return;
+          }
+        }
+        var html = "";
+        try { html = document.documentElement.outerHTML || ""; } catch (e) {}
+        var m = html.match(/https?:\/\/[^\s"'<>]+\.(m3u8|mp4)(\?[^\s"'<>]*)?/);
+        if (m) {
+          var u = m[0];
+          if (u.indexOf("adposter") === -1 && u.indexOf("kjjsaas-sh") === -1) {
+            send({url: u, error: ""});
+            return;
+          }
+        }
+        if (Date.now() - started > 55000) send({url: "", error: "timeout"});
+      }
+      interval = setInterval(poll, 800);
+      poll();
+    })();`;
+    let result;
+    try {
+      result = await evaluateJavascriptViaWebview(playUrl, this.headers(), [script], 60);
     } catch (err) {
       return "";
     }
@@ -387,7 +464,7 @@ class DefaultExtension extends MProvider {
 
   async getVideoList(url) {
     const playUrl = this.fullUrl(url);
-    // 线路1
+    // 线路1（API）
     let r = await this.resolveLine(playUrl);
     if (r.items.length > 0) return r.items;
     // v0.0.5：线路1 无果时试线路2（仅把 -1- 换成 -2-，不遍历更多线路）
@@ -397,7 +474,15 @@ class DefaultExtension extends MProvider {
       if (r2.items.length > 0) return r2.items;
       if (r2.body) r = r2;
     }
-    // 兜底：旧 WebView 路线
+    // v0.0.6：API 路径（裸 HTTP）被节点 IP 限流时，走播放页 WebView 直取直链，
+    // 像真浏览器一样等播放器拿到直链；先线路1，再线路2
+    const wv1 = await this.loadPlayPageVideo(playUrl);
+    if (wv1) return [{ url: wv1, originalUrl: wv1, quality: "Origin" }];
+    if (line2Url !== playUrl) {
+      const wv2 = await this.loadPlayPageVideo(line2Url);
+      if (wv2) return [{ url: wv2, originalUrl: wv2, quality: "Origin" }];
+    }
+    // 兜底：旧 WebView 路线（解析器页）
     let parserUrl = "";
     const iframe = (r.body || "").match(/<iframe[^>]*src="([^"]*hhjx[^"]*)"/i) ||
                    (r.body || "").match(/<iframe[^>]*src="([^"]+)"/i);
