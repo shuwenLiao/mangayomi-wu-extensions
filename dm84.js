@@ -7,7 +7,7 @@ const mangayomiSources = [{
   "typeSource": "single",
   "itemType": 1,
   "isNsfw": false,
-  "version": "0.0.4",
+  "version": "0.0.5",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "dm84.js"
@@ -17,6 +17,8 @@ const mangayomiSources = [{
 // 播放页没有直链，只嵌了一个解析器 iframe（hhjx.hhplayer.com/?url=<hex token>），
 // v0.0.3：先静态 POST 解析器 /api/parse 拿直链（bootstrap 的 url/t/key，不带 ts_key），
 // 再兜底旧的内置浏览器路线（解析器页常被 Cloudflare 拦，WebView 返回空）。
+// v0.0.5：播放页请求抛错不再外泄（WebView 兜底取 HTML）；/api/parse 失败重试一次；
+// 线路1 无果时自动试线路2；其余逻辑不变。
 
 const DM84_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
@@ -290,7 +292,18 @@ class DefaultExtension extends MProvider {
   // POST {url,t,key,client_fallback:false}（不带 ts_key）到 <parser origin>/api/parse，
   // 返回 {code:200, url:<cibn-edge 直链 m3u8>}，302 到上游真实 HLS。
   // 签名有时效，播放时现取现用，不缓存；失败返回 ""，由调用方走旧 WebView 兜底。
+  // v0.0.5：解析失败时重试一次（约 2.5s 后），重跑整段解析以便 bootstrap 的 t/key 现取；
+  // 只重试一次，避免在限流时反复撞墙。
   async parseViaApi(playUrl, body) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const url = await this.parseViaApiOnce(playUrl, body);
+      if (url) return url;
+      if (attempt === 0) await new Promise(function (r) { setTimeout(r, 2500); });
+    }
+    return "";
+  }
+
+  async parseViaApiOnce(playUrl, body) {
     try {
       const iframe = body.match(/<iframe[^>]*src="([^"]*hhjx[^"]*)"/i) ||
                      body.match(/<iframe[^>]*src="([^"]+)"/i);
@@ -325,10 +338,27 @@ class DefaultExtension extends MProvider {
     }
   }
 
-  async getVideoList(url) {
-    const playUrl = this.fullUrl(url);
-    const res = await new Client().get(playUrl, this.headers());
-    const body = res.body || "";
+  // v0.0.5：取播放页 HTML；静态请求抛错时走 WebView 兜底拿 HTML，绝不把异常抛给调用方
+  //（旧版里 Client.get 抛错会直接外泄，App 只显示“视频列表为空”）。
+  async fetchPlayBody(playUrl) {
+    let body = "";
+    try {
+      const res = await new Client().get(playUrl, this.headers());
+      body = res.body || "";
+    } catch (_) {
+      body = "";
+    }
+    if (!body) {
+      body = await this.loadListViaWebview(playUrl, "iframe") || "";
+    }
+    return body;
+  }
+
+  // v0.0.5：单条线路的解析：直链扫描 -> /api/parse（含一次重试）。
+  // 返回 { items, body }；items 为空表示该线路无果。
+  async resolveLine(playUrl) {
+    const body = await this.fetchPlayBody(playUrl);
+    if (!body) return { items: [], body: "" };
     const found = [];
     const seen = {};
     const patterns = [
@@ -344,18 +374,33 @@ class DefaultExtension extends MProvider {
         if (!seen[u]) { seen[u] = true; found.push({ url: u, originalUrl: u, quality: "Origin" }); }
       }
     }
-    if (found.length > 0) return found;
+    if (found.length > 0) return { items: found, body: body };
     // v0.0.3：静态 POST 解析器 /api/parse 拿直链（不走 WebView；
     // 手机上解析器页常被 Cloudflare 拦，WebView 路线返回空）
     const apiUrl = await this.parseViaApi(playUrl, body);
     if (apiUrl) {
-      return [{ url: apiUrl, originalUrl: apiUrl, quality: "Origin",
-        headers: { "User-Agent": DM84_UA, "Referer": playUrl } }];
+      return { items: [{ url: apiUrl, originalUrl: apiUrl, quality: "Origin",
+        headers: { "User-Agent": DM84_UA, "Referer": playUrl } }], body: body };
+    }
+    return { items: [], body: body };
+  }
+
+  async getVideoList(url) {
+    const playUrl = this.fullUrl(url);
+    // 线路1
+    let r = await this.resolveLine(playUrl);
+    if (r.items.length > 0) return r.items;
+    // v0.0.5：线路1 无果时试线路2（仅把 -1- 换成 -2-，不遍历更多线路）
+    const line2Url = playUrl.replace(/-1-(\d+)\.html$/, "-2-$1.html");
+    if (line2Url !== playUrl) {
+      const r2 = await this.resolveLine(line2Url);
+      if (r2.items.length > 0) return r2.items;
+      if (r2.body) r = r2;
     }
     // 兜底：旧 WebView 路线
     let parserUrl = "";
-    const iframe = body.match(/<iframe[^>]*src="([^"]*hhjx[^"]*)"/i) ||
-                   body.match(/<iframe[^>]*src="([^"]+)"/i);
+    const iframe = (r.body || "").match(/<iframe[^>]*src="([^"]*hhjx[^"]*)"/i) ||
+                   (r.body || "").match(/<iframe[^>]*src="([^"]+)"/i);
     if (iframe) parserUrl = iframe[1].replace(/&amp;/g, "&");
     if (!parserUrl) return [];
     const videoUrl = await this.loadParserVideo(parserUrl);
