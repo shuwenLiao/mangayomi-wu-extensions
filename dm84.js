@@ -7,7 +7,7 @@ const mangayomiSources = [{
   "typeSource": "single",
   "itemType": 1,
   "isNsfw": false,
-  "version": "0.0.6",
+  "version": "0.0.7",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "dm84.js"
@@ -23,6 +23,10 @@ const mangayomiSources = [{
 // （Webview 已验证）。新增“播放页 WebView 直取”：把播放页放进后台浏览器，像真浏览器
 // 一样等播放器拿到直链后取 <video> 的 src；API 路径失败后先走它，再走旧的解析器页
 // WebView；两处 WebView 超时都放宽到 60s（慢网也能等到直链出现）。
+// v0.0.7：0.0.6 的 WebView 拿不到直链——播放器用 MSE，<video> 的 src 是 blob: 链接，
+// 直链藏在播放器实际请求的网络记录里。手机实测：后台浏览器确实在下载视频
+// （play.dyttzyv.com 95.8MB），只是扩展看不到直链。改成同时扫 performance
+// 的网络记录，取播放器真正请求的 .m3u8/.mp4 直链；两处 WebView 脚本都补这一项。
 
 const DM84_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
@@ -272,6 +276,19 @@ class DefaultExtension extends MProvider {
             return;
           }
         }
+        // v0.0.7：播放器用 MSE 时 <video> 的 src 是 blob:，直链在网络记录里；
+        // 扫 performance 取播放器真正请求的 .m3u8/.mp4
+        try {
+          var entries = performance.getEntriesByType("resource") || [];
+          for (var k = 0; k < entries.length; k++) {
+            var name = entries[k].name || "";
+            if (name.indexOf(".m3u8") === -1 && name.indexOf(".mp4") === -1) continue;
+            if (name.indexOf("adposter") !== -1) continue;
+            if (name.indexOf("kjjsaas-sh") !== -1) continue;
+            send({url: name, error: ""});
+            return;
+          }
+        } catch (e) {}
         if (Date.now() - started > 55000) send({url: "", error: "timeout"});
       }
       interval = setInterval(poll, 500);
@@ -345,6 +362,19 @@ class DefaultExtension extends MProvider {
             return;
           }
         }
+        // v0.0.7：播放器用 MSE 时 <video> 的 src 是 blob:，直链在网络记录里；
+        // 扫 performance 取播放器真正请求的 .m3u8/.mp4
+        try {
+          var entries = performance.getEntriesByType("resource") || [];
+          for (var k = 0; k < entries.length; k++) {
+            var name = entries[k].name || "";
+            if (name.indexOf(".m3u8") === -1 && name.indexOf(".mp4") === -1) continue;
+            if (name.indexOf("adposter") !== -1) continue;
+            if (name.indexOf("kjjsaas-sh") !== -1) continue;
+            send({url: name, error: ""});
+            return;
+          }
+        } catch (e) {}
         if (Date.now() - started > 55000) send({url: "", error: "timeout"});
       }
       interval = setInterval(poll, 800);
