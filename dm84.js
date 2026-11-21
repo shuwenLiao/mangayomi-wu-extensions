@@ -7,7 +7,7 @@ const mangayomiSources = [{
   "typeSource": "single",
   "itemType": 1,
   "isNsfw": false,
-  "version": "0.0.7",
+  "version": "0.0.8",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "dm84.js"
@@ -27,6 +27,10 @@ const mangayomiSources = [{
 // 直链藏在播放器实际请求的网络记录里。手机实测：后台浏览器确实在下载视频
 // （play.dyttzyv.com 95.8MB），只是扩展看不到直链。改成同时扫 performance
 // 的网络记录，取播放器真正请求的 .m3u8/.mp4 直链；两处 WebView 脚本都补这一项。
+// v0.0.8：0.0.7 能播了，但播放途中会插播澳门新葡京广告——那是网页播放器/解析
+// 注入的广告，不是正片内容。WebView 取直链时改成“收集全部候选再挑”：过滤广告
+// 链接（葡京/新葡/赌场/推广等关键字），优先正片 CDN（groupvideo/dyttzyv/
+// dytt-tvs/1ljx/cibn-edge），优先 MP4 直链（单文件，不会被 playlist 插广告）。
 
 const DM84_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
@@ -248,6 +252,40 @@ class DefaultExtension extends MProvider {
         if (interval) clearInterval(interval);
         window.flutter_inappwebview.callHandler("setResponse", JSON.stringify(value));
       }
+      // v0.0.8：过滤网页注入的广告链接（澳门新葡京等），优先正片 CDN 与 MP4 直链
+      function isAdUrl(u) {
+        if (!u) return true;
+        var low = u.toLowerCase();
+        if (low.indexOf("adposter") !== -1) return true;
+        if (low.indexOf("kjjsaas-sh") !== -1) return true;
+        if (low.indexOf("pujing") !== -1) return true;
+        if (low.indexOf("xinpu") !== -1) return true;
+        if (low.indexOf("casino") !== -1) return true;
+        if (low.indexOf("aomen") !== -1) return true;
+        if (low.indexOf("promo") !== -1) return true;
+        if (low.indexOf("banner") !== -1) return true;
+        if (/\/ad[\/_-]/i.test(u)) return true;
+        if (/[\/_-]ad[\/_.-]/i.test(u)) return true;
+        return false;
+      }
+      function isContentCdn(u) {
+        return u.indexOf("groupvideo") !== -1 || u.indexOf("dyttzyv") !== -1 ||
+               u.indexOf("dytt-tvs") !== -1 || u.indexOf("1ljx") !== -1 ||
+               u.indexOf("cibn-edge") !== -1 || u.indexOf("akamaized") !== -1;
+      }
+      function pickBest(list) {
+        var best = null, bestScore = -1;
+        for (var i = 0; i < list.length; i++) {
+          var u = list[i];
+          if (isAdUrl(u)) continue;
+          var score = 0;
+          if (isContentCdn(u)) score += 10;
+          if (/\.mp4(\?|$)/.test(u)) score += 5;
+          else if (/\.m3u8(\?|$)/.test(u)) score += 2;
+          if (score > bestScore) { bestScore = score; best = u; }
+        }
+        return best;
+      }
       function tryPlay() {
         var videos = document.querySelectorAll("video");
         for (var i = 0; i < videos.length; i++) {
@@ -265,8 +303,7 @@ class DefaultExtension extends MProvider {
           var v = videos[i];
           var src = v.currentSrc || v.src || "";
           if (!src) continue;
-          if (src.indexOf("adposter") !== -1) continue;
-          if (src.indexOf("kjjsaas-sh") !== -1) continue;
+          if (isAdUrl(src)) continue;
           if (src.indexOf("blob:") === 0 || src.indexOf("data:") === 0) continue;
           var dur = v.duration;
           if (/\.m3u8(\?|$)/.test(src) || /\.mp4(\?|$)/.test(src) ||
@@ -277,17 +314,17 @@ class DefaultExtension extends MProvider {
           }
         }
         // v0.0.7：播放器用 MSE 时 <video> 的 src 是 blob:，直链在网络记录里；
-        // 扫 performance 取播放器真正请求的 .m3u8/.mp4
+        // v0.0.8：收集全部候选，过滤广告，挑正片
         try {
           var entries = performance.getEntriesByType("resource") || [];
+          var cands = [];
           for (var k = 0; k < entries.length; k++) {
             var name = entries[k].name || "";
             if (name.indexOf(".m3u8") === -1 && name.indexOf(".mp4") === -1) continue;
-            if (name.indexOf("adposter") !== -1) continue;
-            if (name.indexOf("kjjsaas-sh") !== -1) continue;
-            send({url: name, error: ""});
-            return;
+            cands.push(name);
           }
+          var best = pickBest(cands);
+          if (best) { send({url: best, error: ""}); return; }
         } catch (e) {}
         if (Date.now() - started > 55000) send({url: "", error: "timeout"});
       }
@@ -324,6 +361,40 @@ class DefaultExtension extends MProvider {
         if (interval) clearInterval(interval);
         window.flutter_inappwebview.callHandler("setResponse", JSON.stringify(value));
       }
+      // v0.0.8：过滤网页注入的广告链接（澳门新葡京等），优先正片 CDN 与 MP4 直链
+      function isAdUrl(u) {
+        if (!u) return true;
+        var low = u.toLowerCase();
+        if (low.indexOf("adposter") !== -1) return true;
+        if (low.indexOf("kjjsaas-sh") !== -1) return true;
+        if (low.indexOf("pujing") !== -1) return true;
+        if (low.indexOf("xinpu") !== -1) return true;
+        if (low.indexOf("casino") !== -1) return true;
+        if (low.indexOf("aomen") !== -1) return true;
+        if (low.indexOf("promo") !== -1) return true;
+        if (low.indexOf("banner") !== -1) return true;
+        if (/\/ad[\/_-]/i.test(u)) return true;
+        if (/[\/_-]ad[\/_.-]/i.test(u)) return true;
+        return false;
+      }
+      function isContentCdn(u) {
+        return u.indexOf("groupvideo") !== -1 || u.indexOf("dyttzyv") !== -1 ||
+               u.indexOf("dytt-tvs") !== -1 || u.indexOf("1ljx") !== -1 ||
+               u.indexOf("cibn-edge") !== -1 || u.indexOf("akamaized") !== -1;
+      }
+      function pickBest(list) {
+        var best = null, bestScore = -1;
+        for (var i = 0; i < list.length; i++) {
+          var u = list[i];
+          if (isAdUrl(u)) continue;
+          var score = 0;
+          if (isContentCdn(u)) score += 10;
+          if (/\.mp4(\?|$)/.test(u)) score += 5;
+          else if (/\.m3u8(\?|$)/.test(u)) score += 2;
+          if (score > bestScore) { bestScore = score; best = u; }
+        }
+        return best;
+      }
       function tryPlay() {
         var videos = document.querySelectorAll("video");
         for (var i = 0; i < videos.length; i++) {
@@ -341,8 +412,7 @@ class DefaultExtension extends MProvider {
           var v = videos[i];
           var src = v.currentSrc || v.src || "";
           if (!src) continue;
-          if (src.indexOf("adposter") !== -1) continue;
-          if (src.indexOf("kjjsaas-sh") !== -1) continue;
+          if (isAdUrl(src)) continue;
           if (src.indexOf("blob:") === 0 || src.indexOf("data:") === 0) continue;
           var dur = v.duration;
           if (/\.m3u8(\?|$)/.test(src) || /\.mp4(\?|$)/.test(src) ||
@@ -357,23 +427,23 @@ class DefaultExtension extends MProvider {
         var m = html.match(/https?:\/\/[^\s"'<>]+\.(m3u8|mp4)(\?[^\s"'<>]*)?/);
         if (m) {
           var u = m[0];
-          if (u.indexOf("adposter") === -1 && u.indexOf("kjjsaas-sh") === -1) {
+          if (!isAdUrl(u)) {
             send({url: u, error: ""});
             return;
           }
         }
         // v0.0.7：播放器用 MSE 时 <video> 的 src 是 blob:，直链在网络记录里；
-        // 扫 performance 取播放器真正请求的 .m3u8/.mp4
+        // v0.0.8：收集全部候选，过滤广告，挑正片
         try {
           var entries = performance.getEntriesByType("resource") || [];
+          var cands = [];
           for (var k = 0; k < entries.length; k++) {
             var name = entries[k].name || "";
             if (name.indexOf(".m3u8") === -1 && name.indexOf(".mp4") === -1) continue;
-            if (name.indexOf("adposter") !== -1) continue;
-            if (name.indexOf("kjjsaas-sh") !== -1) continue;
-            send({url: name, error: ""});
-            return;
+            cands.push(name);
           }
+          var best = pickBest(cands);
+          if (best) { send({url: best, error: ""}); return; }
         } catch (e) {}
         if (Date.now() - started > 55000) send({url: "", error: "timeout"});
       }
