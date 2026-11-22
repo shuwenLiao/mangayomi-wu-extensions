@@ -7,7 +7,7 @@ const mangayomiSources = [{
   "typeSource": "single",
   "itemType": 1,
   "isNsfw": false,
-  "version": "0.0.6",
+  "version": "0.0.7",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "age.js"
@@ -256,7 +256,12 @@ class DefaultExtension extends MProvider {
     };
   }
 
-  // 解析器页（jx.wuzhoupai.com 云播放器）在内置浏览器里跑完 JS 后，
+  // v0.0.7：播放页静态 HTML 已无解析器 iframe（JS 渲染后才注入），
+//   静态正则抓不到直链时改走播放页 WebView 路线（loadPlayPageVideo）：
+//   把播放页放进内置浏览器，等 JS 注入解析器并开始播后，
+//   同时扫 <video> currentSrc 和 performance 网络记录，过滤广告后挑正片直链。
+//   与 DM84 v0.0.8 同一套做法。手机实测为准。
+// 解析器页（jx.wuzhoupai.com 云播放器）在内置浏览器里跑完 JS 后，
   // ArtPlayer 会把最终直链放到 <video> 上；轮询抓那个地址回来。
   // 已验证：最终地址是直链 MP4（akamaized.net，无扩展名、无签名），
   // 不用登录、不用 Referer；但广告贴片（adposter.mp4）和解析失败时
@@ -349,6 +354,132 @@ class DefaultExtension extends MProvider {
     }
   }
 
+  // v0.0.7：播放页静态 HTML 里已没有解析器 iframe（JS 渲染后才注入），
+  // 静态正则抓不到直链。改成把播放页本身放进内置浏览器：等页面 JS 跑完、
+  // 解析器注入并开始播后，同时扫 <video> 的 currentSrc 和 performance 网络记录，
+  // 收集全部 .m3u8/.mp4 候选，过滤广告，挑正片直链回来。
+  // 与 DM84 v0.0.8 同一套做法（performance 扫描 + pickBest）。
+  async loadPlayPageVideo(playUrl) {
+    if (typeof evaluateJavascriptViaWebview !== "function") return "";
+    const script = String.raw`(function(){
+      if (window.__agePlayRead) return;
+      window.__agePlayRead = true;
+      var done = false, started = Date.now(), interval;
+      function send(value) {
+        if (done) return;
+        done = true;
+        if (interval) clearInterval(interval);
+        window.flutter_inappwebview.callHandler("setResponse", JSON.stringify(value));
+      }
+      function isAdUrl(u) {
+        if (!u) return true;
+        var low = u.toLowerCase();
+        if (low.indexOf("adposter") !== -1) return true;
+        if (low.indexOf("kjjsaas-sh") !== -1) return true;
+        if (low.indexOf("pujing") !== -1) return true;
+        if (low.indexOf("xinpu") !== -1) return true;
+        if (low.indexOf("casino") !== -1) return true;
+        if (low.indexOf("aomen") !== -1) return true;
+        if (low.indexOf("promo") !== -1) return true;
+        if (low.indexOf("banner") !== -1) return true;
+        if (/\/ad[\/_-]/i.test(u)) return true;
+        if (/[\/_-]ad[\/_.-]/i.test(u)) return true;
+        return false;
+      }
+      function isContentCdn(u) {
+        return u.indexOf("akamaized") !== -1 || u.indexOf("wuzhoupai") !== -1;
+      }
+      function pickBest(list) {
+        var best = null, bestScore = -1;
+        for (var i = 0; i < list.length; i++) {
+          var u = list[i];
+          if (isAdUrl(u)) continue;
+          var score = 0;
+          if (isContentCdn(u)) score += 10;
+          if (/\.mp4(\?|$)/.test(u)) score += 5;
+          else if (/\.m3u8(\?|$)/.test(u)) score += 2;
+          if (score > bestScore) { bestScore = score; best = u; }
+        }
+        return best;
+      }
+      function tryPlay() {
+        var videos = document.querySelectorAll("video");
+        for (var i = 0; i < videos.length; i++) {
+          try { videos[i].muted = true; var p = videos[i].play(); if (p && p.catch) p.catch(function(){}); } catch (e) {}
+          try { videos[i].click(); } catch (e) {}
+        }
+        var btns = document.querySelectorAll(".artplayer-play, .art-icon-play, .art-play, .artplayer-video-play, .vjs-big-play-button, [class*='play-btn'], .artplayer");
+        for (var j = 0; j < btns.length; j++) {
+          try { btns[j].click(); } catch (e) {}
+        }
+        try {
+          var ap = window.artplayer || (window.__artplayer) || null;
+          if (ap && ap.play) { ap.muted = true; ap.play(); }
+        } catch (e) {}
+        try {
+          var cov = document.querySelector(".artplayer-poster, .artplayer-loading, #loading .mov");
+          if (cov) cov.click();
+        } catch (e) {}
+      }
+      function poll() {
+        tryPlay();
+        var videos = document.querySelectorAll("video");
+        for (var i = 0; i < videos.length; i++) {
+          var v = videos[i];
+          var src = v.currentSrc || v.src || "";
+          if (!src) {
+            var s = v.querySelector("source");
+            if (s) src = s.src || "";
+          }
+          if (!src) continue;
+          if (isAdUrl(src)) continue;
+          if (src.indexOf("blob:") === 0 || src.indexOf("data:") === 0) continue;
+          var dur = v.duration;
+          if (src.indexOf("akamaized.net") !== -1 ||
+              /\.m3u8(\?|$)/.test(src) || /\.mp4(\?|$)/.test(src) ||
+              (typeof dur === "number" && !isNaN(dur) && dur > 30)) {
+            send({url: src, error: ""});
+            return;
+          }
+        }
+        // 播放器用 MSE 时 <video> 的 src 是 blob:，直链在网络记录里
+        try {
+          var entries = performance.getEntriesByType("resource") || [];
+          var cands = [];
+          for (var k = 0; k < entries.length; k++) {
+            var name = entries[k].name || "";
+            if (name.indexOf(".m3u8") === -1 && name.indexOf(".mp4") === -1) continue;
+            cands.push(name);
+          }
+          var best = pickBest(cands);
+          if (best) { send({url: best, error: ""}); return; }
+        } catch (e) {}
+        var errEl = document.querySelector("#error");
+        if (errEl && errEl.offsetParent !== null && errEl.innerText && errEl.innerText.trim()) {
+          send({url: "", error: "parser-error"});
+          return;
+        }
+        if (Date.now() - started > 55000) send({url: "", error: "timeout"});
+      }
+      interval = setInterval(poll, 500);
+      poll();
+    })();`;
+    let result;
+    try {
+      result = await evaluateJavascriptViaWebview(playUrl, {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+      }, [script], 60);
+    } catch (err) {
+      return "";
+    }
+    try {
+      const data = JSON.parse(String(result || ""));
+      return (data && data.url) ? data.url : "";
+    } catch (_) {
+      return "";
+    }
+  }
+
   async getVideoList(url) {
     const res = await new Client().get(this.fullUrl(url), this.headers());
     const body = res.body || "";
@@ -375,7 +506,10 @@ class DefaultExtension extends MProvider {
     // 2. AGE 播放页内嵌解析器 iframe（jx.wuzhoupai.com/vip/?url=age_<token>），
     // token 是服务端查表/解密的，静态抓不到直链，也没有可直接调的解析 API
     // （2026-11-14 浏览器实测：常见候选接口 /vip/api.php、/api/、/vip/api、/jx/ 均为 404）。
-    // 改走内置浏览器：让解析器页跑完 JS，从 <video> 上读最终直链。
+    // v0.0.7：实测播放页静态 HTML 里已没有 iframe（JS 渲染后才注入），
+    // 所以 iframe 正则经常抓不到。抓不到时改走播放页 WebView 路线：
+    // 把播放页本身放进内置浏览器，等 JS 注入解析器并开始播后，
+    // 从 <video> 或 performance 网络记录里取最终直链。
     let parserUrl = "";
     const iframe = body.match(/<iframe[^>]*src="([^"]*jx\.wuzhoupai[^"]*)"/i);
     if (iframe) {
@@ -384,10 +518,13 @@ class DefaultExtension extends MProvider {
       const direct = body.match(/https:\/\/jx\.wuzhoupai\.com:8443\/vip\/\?url=age_[^"'\s&]+/);
       if (direct) parserUrl = direct[0];
     }
-    if (!parserUrl) return [];
-    const videoUrl = await this.loadParserVideo(parserUrl);
-    if (!videoUrl) return [];
-    return [{ url: videoUrl, originalUrl: videoUrl, quality: "Origin" }];
+    if (parserUrl) {
+      const videoUrl = await this.loadParserVideo(parserUrl);
+      if (videoUrl) return [{ url: videoUrl, originalUrl: videoUrl, quality: "Origin" }];
+    }
+    const playUrl = await this.loadPlayPageVideo(this.fullUrl(url));
+    if (!playUrl) return [];
+    return [{ url: playUrl, originalUrl: playUrl, quality: "Origin" }];
   }
 
   getFilterList() {
