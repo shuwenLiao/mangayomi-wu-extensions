@@ -7,7 +7,7 @@ const mangayomiSources = [{
   "typeSource": "single",
   "itemType": 1,
   "isNsfw": false,
-  "version": "0.0.3",
+  "version": "0.0.4",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "xfani.js"
@@ -22,13 +22,20 @@ const mangayomiSources = [{
 //   详情剧集：番剧页 HTML 是服务端渲染的，直接解析剧集链接
 //   播放：POST api.xifanacg.com/functions/v1/issue-web-playback
 //        body {"action":"fallback","episode_id":…}，返回直链 mp4/m3u8。
+// v0.0.4：API 故障转移——主 api.xifanacg.com 不通时换备
+//   supa.xifanacg.com（站内 JS 本来就有这个备域名；
+//   api2.xifandm.net 已死不用）。列表 RPC 与取视频都走这个顺序。
+//   另修标题里的 &amp; 不解码问题（JOJO 显示"第二&amp;第三赛段"）。
 // v0.0.3：去掉 0.0.2 加的 x-client-info 请求头——0.0.1（无此头）
 //   时手机上列表正常，0.0.2 加上它后列表反而刷不出，
 //   疑似手机端 Mangayomi/代理对该头处理有问题；
 //   保留 getVideoList 重试 3 次与 status 0。
 
 const XF_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
-const XF_API = "https://api.xifanacg.com";
+// API 有两个可用域名（站内 JS 的故障转移列表）：主 api.xifanacg.com，
+// 备 supa.xifanacg.com。手机上某个域名不通时换另一个试，
+// 列表和取视频都走这个顺序（api2.xifandm.net 已死，不用）。
+const XF_API_HOSTS = ["https://api.xifanacg.com", "https://supa.xifanacg.com"];
 const XF_API_KEY = "sb_publishable_OBIVAWACIX6lPXrO98_z24_HcsmalkA";
 
 class DefaultExtension extends MProvider {
@@ -55,8 +62,21 @@ class DefaultExtension extends MProvider {
 
   fixText(text) {
     if (!text) return "";
+    text = this.decodeEntities(text);
     if (/[\u4E00-\u9FFF\u3400-\u4DBF\uF900-\uFAFF]/.test(text)) return text;
     return this.stringUTF8(text, true);
+  }
+
+  // 详情页 <title> 里 & 写成 &amp;，不解码会显示"第二&amp;第三赛段"
+  decodeEntities(s) {
+    return String(s || "")
+      .replace(/&amp;/g, "&")
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/&#x27;/g, "'")
+      .replace(/&nbsp;/g, " ");
   }
 
   base() { return "https://next.xifanacg.com"; }
@@ -81,14 +101,23 @@ class DefaultExtension extends MProvider {
     return this.base() + "/" + url;
   }
 
-  // Supabase RPC：POST /rest/v1/rpc/<name>，body 为参数 JSON
+  // Supabase RPC：POST /rest/v1/rpc/<name>，body 为参数 JSON。
+  // 两个 API 域名按顺序试，主域名失败就换备域名。
   async rpc(name, params) {
-    const res = await new Client().post(
-      XF_API + "/rest/v1/rpc/" + name,
-      this.apiHeaders(),
-      JSON.stringify(params || {})
-    );
-    return JSON.parse(res.body || "null");
+    let lastErr = null;
+    for (const host of XF_API_HOSTS) {
+      try {
+        const res = await new Client().post(
+          host + "/rest/v1/rpc/" + name,
+          this.apiHeaders(),
+          JSON.stringify(params || {})
+        );
+        const data = JSON.parse(res.body || "null");
+        if (data !== null && data !== undefined) return data;
+      } catch (e) { lastErr = e; }
+    }
+    if (lastErr) throw lastErr;
+    return null;
   }
 
   toItem(row) {
@@ -198,22 +227,26 @@ class DefaultExtension extends MProvider {
 
   // 播放：调 issue-web-playback 拿直链（主链 + 各线路 candidates）。
   // 注意：手机上这一步曾返回空列表（RPC 列表接口正常，说明域名通，
-  // 只是取视频这一步不稳定）。这里最多试 3 次，第一次失败就重调。
+  // 只是取视频这一步不稳定）。两个 API 域名各试一次，
+  // 主域名失败就换备域名 supa.xifanacg.com。
   async getVideoList(url) {
     const m = String(url || "").match(/\/play\/(\d+)/);
     if (!m) return [];
     const epId = parseInt(m[1], 10);
     let data = null;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try {
-        const res = await new Client().post(XF_API + "/functions/v1/issue-web-playback", this.apiHeaders(),
-          JSON.stringify({ action: "fallback", episode_id: epId }));
-        data = JSON.parse(res.body || "");
-        if (data && data.ok) break;
-        data = null;
-      } catch (e) {
-        data = null;
+    for (const host of XF_API_HOSTS) {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          const res = await new Client().post(host + "/functions/v1/issue-web-playback", this.apiHeaders(),
+            JSON.stringify({ action: "fallback", episode_id: epId }));
+          data = JSON.parse(res.body || "");
+          if (data && data.ok) break;
+          data = null;
+        } catch (e) {
+          data = null;
+        }
       }
+      if (data && data.ok) break;
     }
     if (!data || !data.ok) return [];
     const items = [];
