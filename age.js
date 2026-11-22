@@ -7,7 +7,7 @@ const mangayomiSources = [{
   "typeSource": "single",
   "itemType": 1,
   "isNsfw": false,
-  "version": "0.0.13",
+  "version": "0.0.14",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "age.js"
@@ -524,6 +524,54 @@ class DefaultExtension extends MProvider {
       genre: [],
       episodes: eps
     };
+  }
+
+  // v0.0.14：三条线路。AGE 的 /play/<id>/<line>/<ep> 里 line 就是线路：
+  // 1=自建云（/vip/ 加密接口）、2=暴风（/m3u8/）、3=红牛（/m3u8/）。
+  // /m3u8/ 线路的解析器页直接把直链写在 HTML 里：var Vurl = '...index.m3u8'，
+  // 不用 WASM、不用加密。实测红牛返回真 m3u8（多段 .ts，首段 200）；
+  // 自建云的 /vip/ 接口目前只返回 3 秒错误视频（784KB，时长 3.08s）。
+  getPreferredLine() {
+    try {
+      const pref = new SharedPreferences();
+      const v = pref.get("line");
+      if (v === "1" || v === "2" || v === "3") return v;
+    } catch (_) {}
+    return "3";
+  }
+
+  // 取一条 /m3u8/ 线路的直链：播放页 -> 解析器 iframe -> 解析器页里的 var Vurl。
+  // 校验 m3u8 真实可用（取回内容含 #EXTM3U 且有 .ts），否则返回空，让调用方换下一条线。
+  async loadM3u8Line(playUrl) {
+    const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
+    let html = "";
+    try {
+      const res = await new Client().get(playUrl, { "User-Agent": UA });
+      html = res ? (res.body || "") : "";
+    } catch (e) { return { url: "", error: "play-get-fail" }; }
+    if (!html) return { url: "", error: "play-empty" };
+    const m = html.match(/<iframe[^>]*src="(https:\/\/jx\.wuzhoupai\.com:8443\/m3u8\/\?url=[^"]+)"/);
+    if (!m) return { url: "", error: "no-m3u8-iframe" };
+    const parserUrl = m[1].replace(/&amp;/g, "&");
+    let phtml = "";
+    try {
+      const pres = await new Client().get(parserUrl, { "User-Agent": UA, "Referer": playUrl });
+      phtml = pres ? (pres.body || "") : "";
+    } catch (e) { return { url: "", error: "parser-get-fail" }; }
+    if (!phtml) return { url: "", error: "parser-empty" };
+    const vm = phtml.match(/var Vurl = '([^']+)'/);
+    if (!vm) return { url: "", error: "no-vurl" };
+    const vurl = vm[1];
+    if (vurl.indexOf(".m3u8") === -1) return { url: "", error: "not-m3u8" };
+    // 校验：取回 m3u8 内容，确认是真播放列表（#EXTM3U + .ts），不是 404 页
+    try {
+      const mres = await new Client().get(vurl, { "User-Agent": UA, "Referer": parserUrl });
+      const mbody = mres ? (mres.body || "") : "";
+      if (mbody.indexOf("#EXTM3U") === -1 || mbody.indexOf(".ts") === -1) {
+        return { url: "", error: "m3u8-invalid" };
+      }
+    } catch (e) { return { url: "", error: "m3u8-check-fail" }; }
+    return { url: vurl, error: "", referer: parserUrl };
   }
 
   // v0.0.13：API 直连（纯 JS，不用 WASM/WebView）。
@@ -1069,13 +1117,55 @@ class DefaultExtension extends MProvider {
       }
     }
     if (found.length > 0) return found;
-    // 2. AGE 播放页内嵌解析器 iframe（jx.wuzhoupai.com/vip/?url=age_<token>），
-    // token 是服务端查表/解密的，静态抓不到直链，也没有可直接调的解析 API
-    // （2026-11-14 浏览器实测：常见候选接口 /vip/api.php、/api/、/vip/api、/jx/ 均为 404）。
-    // v0.0.7：实测播放页静态 HTML 里已没有 iframe（JS 渲染后才注入），
-    // 所以 iframe 正则经常抓不到。抓不到时改走播放页 WebView 路线：
-    // 把播放页本身放进内置浏览器，等 JS 注入解析器并开始播后，
-    // 从 <video> 或 performance 网络记录里取最终直链。
+    // v0.0.14：三条线路。播放页 URL 是 /play/<id>/<line>/<ep>，line 即线路：
+    // 1=自建云（/vip/ 加密接口）、2=暴风（/m3u8/）、3=红牛（/m3u8/）。
+    // 按偏好顺序逐条尝试：/m3u8/ 线路的解析器页直接写明 Vurl（真 m3u8，直出）；
+    // /vip/ 线路走纯 JS API 直连。任一线路拿到直链即返回。
+    const playUrlFull = this.fullUrl(url);
+    const mLine = playUrlFull.match(/\/play\/(\d+)\/(\d+)\/(\d+)/);
+    if (mLine) {
+      const aid = mLine[1], ep = mLine[3];
+      const pref = this.getPreferredLine();
+      const order = [pref];
+      for (const l of ["3", "2", "1"]) if (order.indexOf(l) === -1) order.push(l);
+      for (const line of order) {
+        const linePlayUrl = this.fullUrl("/play/" + aid + "/" + line + "/" + ep);
+        let lineHtml = "";
+        try {
+          const lres = await new Client().get(linePlayUrl, this.headers());
+          lineHtml = lres ? (lres.body || "") : "";
+        } catch (e) { continue; }
+        if (!lineHtml) continue;
+        const liframe = lineHtml.match(/<iframe[^>]*src="([^"]*jx\.wuzhoupai[^"]*)"/i);
+        let lineParser = "";
+        if (liframe) lineParser = liframe[1].replace(/&amp;/g, "&");
+        if (!lineParser) {
+          const d = lineHtml.match(/https:\/\/jx\.wuzhoupai\.com:8443\/(?:vip|m3u8)\/\?url=age_[^"'\s&]+/);
+          if (d) lineParser = d[0];
+        }
+        if (!lineParser) continue;
+        if (lineParser.indexOf("/m3u8/") !== -1) {
+          const r = await this.loadM3u8Line(linePlayUrl);
+          if (r.url) {
+            return [{ url: r.url, originalUrl: r.url, quality: "Origin", headers: { "Referer": linePlayUrl, "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36" } }];
+          }
+          continue;
+        }
+        // /vip/ 线路：纯 JS API 直连
+        const api = await this.loadParserApiDirect(lineParser, linePlayUrl);
+        if (api.url) {
+          // kjjsaas-sh 的 mp4 是 3 秒错误视频（784KB，时长 3.08s，多个番共用同一条），
+          // 不是正片；跳过它，继续试下一条线。
+          if (api.url.indexOf("kjjsaas-sh") !== -1 && /\.mp4(\?|$)/.test(api.url)) continue;
+          if (this.isDirectStream(api.url)) {
+            return [{ url: api.url, originalUrl: api.url, quality: "Origin" }];
+          }
+          // 非直链（xvip 等）不返回，避免转 00:00；继续试下一条线
+          continue;
+        }
+      }
+    }
+    // 兜底：沿用旧的单线路解析（抓当前页 iframe 走 API/WebView/扫描）
     let parserUrl = "";
     const iframe = body.match(/<iframe[^>]*src="([^"]*jx\.wuzhoupai[^"]*)"/i);
     if (iframe) {
@@ -1085,27 +1175,17 @@ class DefaultExtension extends MProvider {
       if (direct) parserUrl = direct[0];
     }
     if (parserUrl) {
-      // v0.0.13：先走纯 JS API 直连（Client，不用 WASM/WebView）。
-      // 直链才返回；xvip 这类非直链不返回（避免转 00:00），直接留空走 WebView。
-      const api = await this.loadParserApiDirect(parserUrl, this.fullUrl(url));
-      if (api.url) {
-        if (this.isDirectStream(api.url)) {
-          return [{ url: api.url, originalUrl: api.url, quality: "Origin" }];
-        }
-        return [];
-      }
-      // API 直连失败：退回 0.0.12 的 WebView API 路线，再退回 performance 扫描。
-      const apiWv = await this.loadParserApiVideo(parserUrl, this.fullUrl(url));
+      const apiWv = await this.loadParserApiVideo(parserUrl, playUrlFull);
       if (apiWv.url) {
         if (this.isDirectStream(apiWv.url)) {
           return [{ url: apiWv.url, originalUrl: apiWv.url, quality: "Origin" }];
         }
         return [];
       }
-      const videoUrl = await this.loadParserVideo(parserUrl, this.fullUrl(url));
+      const videoUrl = await this.loadParserVideo(parserUrl, playUrlFull);
       if (videoUrl) return [{ url: videoUrl, originalUrl: videoUrl, quality: "Origin" }];
     }
-    const playUrl = await this.loadPlayPageVideo(this.fullUrl(url));
+    const playUrl = await this.loadPlayPageVideo(playUrlFull);
     if (!playUrl) return [];
     return [{ url: playUrl, originalUrl: playUrl, quality: "Origin" }];
   }
@@ -1123,6 +1203,18 @@ class DefaultExtension extends MProvider {
         "value": "https://www.agedm.io",
         "dialogTitle": "URL",
         "dialogMessage": ""
+      }
+    }, {
+      // v0.0.14：播放线路。AGE 有三条线（自建云=1、暴风=2、红牛=3），
+      // 每条线是独立的播放源；自建云（/vip/ 加密接口）目前只返回 3 秒错误视频，
+      // 红牛（/m3u8/ 直链）实测可用。默认红牛；扩展会按偏好顺序逐条尝试。
+      "key": "line",
+      "listPreference": {
+        "title": "播放线路",
+        "summary": "自建云 / 暴风 / 红牛",
+        "valueIndex": 2,
+        "entries": ["自建云", "暴风", "红牛"],
+        "entryValues": ["1", "2", "3"]
       }
     }];
   }
