@@ -7,7 +7,7 @@ const mangayomiSources = [{
   "typeSource": "single",
   "itemType": 1,
   "isNsfw": false,
-  "version": "0.0.1",
+  "version": "0.0.2",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "xfani.js"
@@ -22,8 +22,10 @@ const mangayomiSources = [{
 //   详情剧集：番剧页 HTML 是服务端渲染的，直接解析剧集链接
 //   播放：POST api.xifanacg.com/functions/v1/issue-web-playback
 //        body {"action":"fallback","episode_id":…}，返回直链 mp4/m3u8。
-// apikey 是网站前端公开的 publishable key（写在其 JS 里），
-// 和网站本身调的是同一个接口、同一把钥匙。
+// v0.0.2：getVideoList 最多重试 3 次（手机上取视频曾返回空列表，
+//   而列表接口正常，疑似取视频这一步不稳定/冷启动）；请求头补
+//   x-client-info（与站内 supabase-js 客户端一致）；status 3→0
+//   （手机上 3 显示为"已取消"）。
 
 const XF_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 const XF_API = "https://api.xifanacg.com";
@@ -68,6 +70,7 @@ class DefaultExtension extends MProvider {
       "Content-Type": "application/json",
       "apikey": XF_API_KEY,
       "Authorization": "Bearer " + XF_API_KEY,
+      "x-client-info": "supabase-js-web/2.39.0",
       "User-Agent": XF_UA
     };
   }
@@ -184,7 +187,7 @@ class DefaultExtension extends MProvider {
       imageUrl: imageUrl,
       description: description,
       genre: [],
-      status: 3,
+      status: 0,
       episodes: eps
     };
   }
@@ -194,17 +197,24 @@ class DefaultExtension extends MProvider {
     return m ? m[1] : "";
   }
 
-  // 播放：调 issue-web-playback 拿直链（主链 + 各线路 candidates）
+  // 播放：调 issue-web-playback 拿直链（主链 + 各线路 candidates）。
+  // 注意：手机上这一步曾返回空列表（RPC 列表接口正常，说明域名通，
+  // 只是取视频这一步不稳定）。这里最多试 3 次，第一次失败就重调。
   async getVideoList(url) {
     const m = String(url || "").match(/\/play\/(\d+)/);
     if (!m) return [];
+    const epId = parseInt(m[1], 10);
     let data = null;
-    try {
-      const res = await new Client().post(XF_API + "/functions/v1/issue-web-playback", this.apiHeaders(),
-        JSON.stringify({ action: "fallback", episode_id: parseInt(m[1], 10) }));
-      data = JSON.parse(res.body || "");
-    } catch (e) {
-      return [];
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const res = await new Client().post(XF_API + "/functions/v1/issue-web-playback", this.apiHeaders(),
+          JSON.stringify({ action: "fallback", episode_id: epId }));
+        data = JSON.parse(res.body || "");
+        if (data && data.ok) break;
+        data = null;
+      } catch (e) {
+        data = null;
+      }
     }
     if (!data || !data.ok) return [];
     const items = [];
