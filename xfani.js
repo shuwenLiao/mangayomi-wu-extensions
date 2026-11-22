@@ -7,7 +7,7 @@ const mangayomiSources = [{
   "typeSource": "single",
   "itemType": 1,
   "isNsfw": false,
-  "version": "0.0.5",
+  "version": "0.0.6",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "xfani.js"
@@ -22,6 +22,12 @@ const mangayomiSources = [{
 //   详情剧集：番剧页 HTML 是服务端渲染的，直接解析剧集链接
 //   播放：POST api.xifanacg.com/functions/v1/issue-web-playback
 //        body {"action":"fallback","episode_id":…}，返回直链 mp4/m3u8。
+// v0.0.6：第三个 API 域名。站内播放器 JS 的故障转移列表里除了
+//   api/supa，还有 https://rzmsnqblptbceicadbyd.galentwww.cn
+//   （Supabase 项目直连域名，.cn 国内域名）。手机上 api/supa 两个
+//   域名取视频都不通（WiFi/流量、代理/直连都试过），加这个 .cn 域名
+//   作第三备选——国内直连可能通。服务端测不到它（境外超时），
+//   只能手机实测。列表和取视频都走 api -> supa -> galentwww 顺序。
 // v0.0.5：播放线路。Xfani 有三条线（主线-1 xfxf1=4、主线-2 AL=1、
 //   备用-1 CS=2），站内播放器也提供这三条线切换。手机上"fallback"
 //   （一次取三条线）常失败，连站内网页播放器都报"播放地址获取失败"；
@@ -33,10 +39,12 @@ const mangayomiSources = [{
 //   另修标题里的 &amp; 不解码问题（JOJO 显示"第二&amp;第三赛段"）。
 
 const XF_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
-// API 有两个可用域名（站内 JS 的故障转移列表）：主 api.xifanacg.com，
-// 备 supa.xifanacg.com。手机上某个域名不通时换另一个试，
-// 列表和取视频都走这个顺序（api2.xifandm.net 已死，不用）。
-const XF_API_HOSTS = ["https://api.xifanacg.com", "https://supa.xifanacg.com"];
+// API 有三个可用域名（站内 JS 的故障转移列表）：主 api.xifanacg.com，
+// 备 supa.xifanacg.com，第三备选 rzmsnqblptbceicadbyd.galentwww.cn
+// （.cn 国内域名，服务端境外测不到它，只能手机实测）。
+// 手机上某个域名不通时换另一个试，列表和取视频都走这个顺序
+// （api2.xifandm.net 已死，不用）。
+const XF_API_HOSTS = ["https://api.xifanacg.com", "https://supa.xifanacg.com", "https://rzmsnqblptbceicadbyd.galentwww.cn"];
 const XF_API_KEY = "sb_publishable_OBIVAWACIX6lPXrO98_z24_HcsmalkA";
 // 三条播放线：source_id -> 显示名。4=主线-1（moedot mp4），
 // 1=主线-2（xfvod mp4），2=备用-1（playxf m3u8）。
