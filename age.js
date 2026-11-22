@@ -7,7 +7,7 @@ const mangayomiSources = [{
   "typeSource": "single",
   "itemType": 1,
   "isNsfw": false,
-  "version": "0.0.8",
+  "version": "0.0.9",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "age.js"
@@ -245,7 +245,18 @@ class DefaultExtension extends MProvider {
     let name = titleEl ? (titleEl.text || "") : "";
     name = name.split(" - ")[0].trim();
     const cover = doc.selectFirst("img.video_thumbs");
-    const imageUrl = cover ? this.coverUrl(cover.attr("data-original") || cover.attr("src") || "") : "";
+    // v0.0.9：详情页正文里的 img.video_thumbs 全是“相关推荐”的封面，第一张根本不是本片
+    // （实测黄金神威详情页 12 张全是别的番，第一张是 20150076）。点进详情页后 App 用这个错封面
+    // 覆盖掉原来正确的封面，所以“一点进去封面就串，不点就不错”。
+    // 本片封面只在 <meta property="og:image"> 里，先取 og:image，取不到再退回 img.video_thumbs。
+    let imageUrl = "";
+    const og = body.match(/<meta[^>]*property=["']og:image["'][^>]*content=["']([^"']+)["']/i)
+      || body.match(/<meta[^>]*content=["']([^"']+)["'][^>]*property=["']og:image["']/i);
+    if (og) imageUrl = og[1].replace(/&amp;/g, "&");
+    if (!imageUrl) {
+      imageUrl = cover ? (cover.attr("data-original") || cover.attr("src") || "") : "";
+    }
+    imageUrl = this.coverUrl(imageUrl);
     const meta = doc.selectFirst('meta[name="description"]');
     const description = meta ? this.fixText(meta.attr("content") || "") : "";
     // 只取默认（第一个）播放源的剧集，避免 8 个源重复
