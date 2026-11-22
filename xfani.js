@@ -7,7 +7,7 @@ const mangayomiSources = [{
   "typeSource": "single",
   "itemType": 1,
   "isNsfw": false,
-  "version": "0.0.2",
+  "version": "0.0.3",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "xfani.js"
@@ -22,10 +22,10 @@ const mangayomiSources = [{
 //   详情剧集：番剧页 HTML 是服务端渲染的，直接解析剧集链接
 //   播放：POST api.xifanacg.com/functions/v1/issue-web-playback
 //        body {"action":"fallback","episode_id":…}，返回直链 mp4/m3u8。
-// v0.0.2：getVideoList 最多重试 3 次（手机上取视频曾返回空列表，
-//   而列表接口正常，疑似取视频这一步不稳定/冷启动）；请求头补
-//   x-client-info（与站内 supabase-js 客户端一致）；status 3→0
-//   （手机上 3 显示为"已取消"）。
+// v0.0.3：去掉 0.0.2 加的 x-client-info 请求头——0.0.1（无此头）
+//   时手机上列表正常，0.0.2 加上它后列表反而刷不出，
+//   疑似手机端 Mangayomi/代理对该头处理有问题；
+//   保留 getVideoList 重试 3 次与 status 0。
 
 const XF_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 const XF_API = "https://api.xifanacg.com";
@@ -70,7 +70,6 @@ class DefaultExtension extends MProvider {
       "Content-Type": "application/json",
       "apikey": XF_API_KEY,
       "Authorization": "Bearer " + XF_API_KEY,
-      "x-client-info": "supabase-js-web/2.39.0",
       "User-Agent": XF_UA
     };
   }
