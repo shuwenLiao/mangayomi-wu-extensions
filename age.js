@@ -7,7 +7,7 @@ const mangayomiSources = [{
   "typeSource": "single",
   "itemType": 1,
   "isNsfw": false,
-  "version": "0.0.11",
+  "version": "0.0.12",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "age.js"
@@ -277,6 +277,142 @@ class DefaultExtension extends MProvider {
       genre: [],
       episodes: eps
     };
+  }
+
+  // v0.0.12：API 直连路线（2026-11-22 22:45 服务端跑通）。
+  // 解析器 API 已完整逆向：POST https://jx.wuzhoupai.com:8443/vip/Api.php，
+  // Params = hxm_encrypt(JSON{url:Vurl,wap,ios,host,referer,time}).toUpperCase()，
+  // Sign = hxm_encrypt(Host | uuid | Time | Version | Params).toUpperCase()，
+  // 响应 {Status,Code,Appkey,Version,Data} 用 AES-CBC 解（key=MD5(Code+Appkey+Version)[0:16]，
+  // IV=[16:32]，Data 是 hex；Code==10 时改用 meta-id 密钥 + hxm_decrypt(info.url)）。
+  // 实测地错 S1E1 返回阿里云 OSS 直链 mp4（不用 Referer/cookie，原生播放器可直接播）。
+  // 扩展跑不了 WASM，所以在 WebView 里跑这套流程：解析器页自带 jQuery+CryptoJS+WASM，
+  // 注入脚本等 hxm_encrypt 就绪后自己调 Api.php、解密、把 info.url 交回来。
+  // 比 performance 扫描更准（拿的是解析器返回的权威地址，不是猜的网络记录）。
+  isDirectStream(u) {
+    if (!u) return false;
+    var low = u.toLowerCase();
+    // xvip/ymjigou 是解析器返回的非直链（手机实测转 00:00），不算直链
+    if (low.indexOf("xvip") !== -1) return false;
+    if (low.indexOf("ymjigou") !== -1) return false;
+    if (/\.mp4(\?|$)/.test(low)) return true;
+    if (/\.m3u8(\?|$)/.test(low)) return true;
+    if (low.indexOf("akamaized") !== -1) return true;
+    if (low.indexOf("aliyuncs.com") !== -1) return true;
+    if (low.indexOf("oss-cn-") !== -1) return true;
+    if (low.indexOf("amazonaws.com") !== -1) return true;
+    return false;
+  }
+
+  async loadParserApiVideo(parserUrl, referer) {
+    if (typeof evaluateJavascriptViaWebview !== "function") {
+      return { url: "", error: "no-webview" };
+    }
+    const script = String.raw`(function(){
+      if (window.__ageApiRead) return;
+      window.__ageApiRead = true;
+      var done = false, started = Date.now(), interval;
+      function send(value) {
+        if (done) return;
+        done = true;
+        if (interval) clearInterval(interval);
+        window.flutter_inappwebview.callHandler("setResponse", JSON.stringify(value));
+      }
+      function uuidv4() {
+        var chars = "0123456789ABCDEF";
+        var u = "";
+        for (var i = 0; i < 36; i++) {
+          if (i === 8 || i === 13 || i === 18 || i === 23) { u += "-"; continue; }
+          if (i === 14) { u += "4"; continue; }
+          var r = Math.floor(Math.random() * 16);
+          if (i === 19) r = (r & 0x3) | 0x8;
+          u += chars[r];
+        }
+        return u;
+      }
+      function aesCbcDe(hexData, md5hex) {
+        var key = CryptoJS.enc.Latin1.parse(md5hex.substring(0, 16));
+        var iv = CryptoJS.enc.Latin1.parse(md5hex.substring(16, 32));
+        var b64 = CryptoJS.enc.Base64.stringify(CryptoJS.enc.Hex.parse(hexData));
+        var dec = CryptoJS.AES.decrypt(b64, key, {iv: iv, mode: CryptoJS.mode.CBC, padding: CryptoJS.pad.Pkcs7});
+        return CryptoJS.enc.Utf8.stringify(dec);
+      }
+      function poll() {
+        if (typeof hxm_encrypt !== "function" || typeof CryptoJS === "undefined") {
+          if (Date.now() - started > 40000) send({url: "", error: "wasm-timeout"});
+          return;
+        }
+        if (typeof Vurl === "undefined" || typeof Api === "undefined" || typeof Time === "undefined") {
+          if (Date.now() - started > 40000) send({url: "", error: "no-globals"});
+          return;
+        }
+        clearInterval(interval);
+        try {
+          var uuid = uuidv4();
+          var ua = navigator.userAgent || "";
+          var wap = /iPad|iPhone|Android|Linux|iPod|SymbianOS|Windows Phone/i.test(ua) ? "1" : "0";
+          var ios = /iPad|iPhone|iPod/i.test(ua) ? "1" : "0";
+          var payload = JSON.stringify({url: Vurl, wap: wap, ios: ios, host: Host, referer: Ref, time: Time});
+          var Params = hxm_encrypt(payload).toUpperCase();
+          var Sign = hxm_encrypt(Host + " | " + uuid + " | " + Time + " | " + Version + " | " + Params).toUpperCase();
+          fetch(Api + "/Api.php", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/x-www-form-urlencoded",
+              "Video-Parse-Uuid": uuid,
+              "Video-Parse-Time": String(Time),
+              "Video-Parse-Version": Version,
+              "Video-Parse-Sign": Sign
+            },
+            body: "Params=" + encodeURIComponent(Params)
+          }).then(function(r){ return r.json(); }).then(function(resp){
+            if (!resp || resp.Status != 1) { send({url: "", error: "api-status"}); return; }
+            try {
+              if (resp.Code == 10) {
+                var ctEl = document.querySelector('meta[http-equiv="Content-Type"]');
+                var vpEl = document.querySelector('meta[name="viewport"]');
+                var ctId = ctEl ? (ctEl.id || "") : "";
+                var vpId = vpEl ? (vpEl.id || "") : "";
+                var i1 = (ctId + vpId).replace("viewport", "");
+                var k = CryptoJS.MD5(String(resp.Code) + i1 + resp.Appkey + resp.Version).toString();
+                var infoJson = aesCbcDe(resp.Data, k);
+                var info = JSON.parse(infoJson);
+                var u = decodeURIComponent(hxm_decrypt(info.url));
+                send({url: u, error: ""});
+              } else {
+                var k2 = CryptoJS.MD5(String(resp.Code) + resp.Appkey + resp.Version).toString();
+                var infoJson2 = aesCbcDe(resp.Data, k2);
+                var info2 = JSON.parse(infoJson2);
+                var u2 = decodeURIComponent(info2.url);
+                send({url: u2, error: ""});
+              }
+            } catch (e) {
+              send({url: "", error: "decrypt-fail:" + (e && e.message ? e.message : e)});
+            }
+          }).catch(function(e){ send({url: "", error: "fetch-fail:" + (e && e.message ? e.message : e)}); });
+        } catch (e) {
+          send({url: "", error: "js-err:" + (e && e.message ? e.message : e)});
+        }
+      }
+      interval = setInterval(poll, 500);
+      poll();
+    })();`;
+    let result;
+    try {
+      const headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+      };
+      if (referer) headers["Referer"] = referer;
+      result = await evaluateJavascriptViaWebview(parserUrl, headers, [script], 45);
+    } catch (err) {
+      return { url: "", error: "webview-throw" };
+    }
+    try {
+      const data = JSON.parse(String(result || ""));
+      return { url: (data && data.url) ? data.url : "", error: (data && data.error) ? data.error : "" };
+    } catch (_) {
+      return { url: "", error: "bad-json" };
+    }
   }
 
   // v0.0.7：播放页静态 HTML 已无解析器 iframe（JS 渲染后才注入），
@@ -622,6 +758,16 @@ class DefaultExtension extends MProvider {
       if (direct) parserUrl = direct[0];
     }
     if (parserUrl) {
+      // v0.0.12：先走 API 直连（解析器返回的权威地址）；直链才返回，
+      // xvip 这类非直链不返回（避免转 00:00），直接留空走 WebView。
+      // API 本身出错/超时才退回 performance 扫描。
+      const api = await this.loadParserApiVideo(parserUrl, this.fullUrl(url));
+      if (api.url) {
+        if (this.isDirectStream(api.url)) {
+          return [{ url: api.url, originalUrl: api.url, quality: "Origin" }];
+        }
+        return [];
+      }
       const videoUrl = await this.loadParserVideo(parserUrl, this.fullUrl(url));
       if (videoUrl) return [{ url: videoUrl, originalUrl: videoUrl, quality: "Origin" }];
     }
