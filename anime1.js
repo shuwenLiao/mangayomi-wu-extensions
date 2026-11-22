@@ -7,7 +7,7 @@ const mangayomiSources = [{
   "typeSource": "single",
   "itemType": 1,
   "isNsfw": false,
-  "version": "0.0.1",
+  "version": "0.0.2",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "anime1.js"
@@ -126,13 +126,94 @@ class DefaultExtension extends MProvider {
     };
   }
 
-  // 取直鏈：抓 <video data-apireq="...">，POST 到 v.anime1.me/api，取回 mp4。
-  // 注意：mp4 直鏈被伺服器鎖定（需 API 回應的三個簽名 Cookie：e / p / h），
-  // Mangayomi JS 拿不到 Set-Cookie，也推不出簽名，所以原生播放器直接取會 403。
-  // 這裡仍回傳直鏈（帶 Referer + UA），手機端若能播就是賺到；
-  // 播不了時請用內建瀏覽器（WebView）開本集頁面看，瀏覽器會自動帶上 Cookie。
+  // v0.0.2：先走 WebView——把本集頁面放進後台瀏覽器，點播放讓 video.js 去 POST
+  // 取直鏈（瀏覽器會自動帶上 API 回應的三個簽名 Cookie：e / p / h，HttpOnly，
+  // JS 讀不到也帶不走）。取到直鏈後交給原生播放器：如果原生播放器與 WebView
+  // 共用 Cookie 庫，就能播；不共用的話仍會轉圈（手機實測為準）。
+  // WebView 拿不到直鏈時，兜底走裸 HTTP API（v0.0.1 的做法）。
+  async loadEpisodeVideo(epUrl) {
+    if (typeof evaluateJavascriptViaWebview !== "function") return "";
+    const script = String.raw`(function(){
+      if (window.__a1Read) return;
+      window.__a1Read = true;
+      var done = false, started = Date.now(), interval;
+      function send(value) {
+        if (done) return;
+        done = true;
+        if (interval) clearInterval(interval);
+        window.flutter_inappwebview.callHandler("setResponse", JSON.stringify(value));
+      }
+      function tryPlay() {
+        var btns = document.querySelectorAll(".vjs-big-play-button, .vjs-play-control, [class*='play-button']");
+        for (var j = 0; j < btns.length; j++) {
+          try { btns[j].click(); } catch (e) {}
+        }
+        var videos = document.querySelectorAll("video");
+        for (var i = 0; i < videos.length; i++) {
+          try { videos[i].muted = true; var p = videos[i].play(); if (p && p.catch) p.catch(function(){}); } catch (e) {}
+        }
+      }
+      function poll() {
+        tryPlay();
+        var videos = document.querySelectorAll("video");
+        for (var i = 0; i < videos.length; i++) {
+          var v = videos[i];
+          var src = v.currentSrc || v.src || "";
+          if (!src) continue;
+          if (src.indexOf("blob:") === 0 || src.indexOf("data:") === 0) continue;
+          if (/\.mp4(\?|$)/.test(src) || /\.m3u8(\?|$)/.test(src)) {
+            send({url: src, error: ""});
+            return;
+          }
+        }
+        try {
+          var entries = performance.getEntriesByType("resource") || [];
+          for (var k = 0; k < entries.length; k++) {
+            var name = entries[k].name || "";
+            if (name.indexOf(".mp4") !== -1 && name.indexOf("anime1.me") === -1) {
+              send({url: name, error: ""});
+              return;
+            }
+            if (name.indexOf(".mp4") !== -1) {
+              send({url: name, error: ""});
+              return;
+            }
+          }
+        } catch (e) {}
+        if (Date.now() - started > 30000) send({url: "", error: "timeout"});
+      }
+      interval = setInterval(poll, 500);
+      poll();
+    })();`;
+    let result;
+    try {
+      result = await evaluateJavascriptViaWebview(epUrl, this.headers(), [script], 35);
+    } catch (err) {
+      return "";
+    }
+    try {
+      const data = JSON.parse(String(result || ""));
+      return (data && data.url) ? data.url : "";
+    } catch (_) {
+      return "";
+    }
+  }
+
+  // 取直鏈：先 WebView（v0.0.2），拿不到再走裸 HTTP API（v0.0.1）。
+  // 注意：mp4 直鏈被伺服器鎖定（需 API 回應的三個簽名 Cookie：e / p / h，皆 HttpOnly，
+  // JS 讀不到，Client 也拿不到 Set-Cookie），原生播放器直接取會 403。
+  // WebView 路線是賭原生播放器與 WebView 共用 Cookie 庫；手機實測為準。
   async getVideoList(url) {
     const epUrl = this.fullUrl(url);
+    // 1) WebView 先取直鏈
+    let wvUrl = "";
+    try { wvUrl = await this.loadEpisodeVideo(epUrl); } catch (e) { wvUrl = ""; }
+    if (wvUrl) {
+      let src = String(wvUrl);
+      if (src.indexOf("//") === 0) src = "https:" + src;
+      return [{ url: src, originalUrl: src, quality: "Origin", headers: { "Referer": epUrl, "User-Agent": A1_UA } }];
+    }
+    // 2) 兜底：裸 HTTP API
     let res = null;
     try { res = await new Client().get(epUrl, this.headers()); } catch (e) { res = null; }
     const html = res ? (res.body || "") : "";
