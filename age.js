@@ -7,7 +7,7 @@ const mangayomiSources = [{
   "typeSource": "single",
   "itemType": 1,
   "isNsfw": false,
-  "version": "0.0.7",
+  "version": "0.0.8",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "age.js"
@@ -137,6 +137,18 @@ class DefaultExtension extends MProvider {
     return this.getBaseUrl() + "/" + url;
   }
 
+  // v0.0.8：封面直连图床，不走百度 gimg 代理。
+  // 站源 data-original 是百度代理地址（gimg*.baidu.com/gimg?...&src=<urlencoded 真地址>），
+  // 代理在部分网络下会返回错图/旧图（手机上黄金神威显示成鬼灭/地错封面，图床源文件本身是对的）。
+  // 从地址里抠出 covers/<id>.jpg，直接拼图床直链 cdn.aqdstatic.com:966。
+  // 抠不到 id 时原样返回，不破坏原有逻辑。
+  coverUrl(raw) {
+    if (!raw) return "";
+    const m = raw.match(/covers(?:\/|%2F)(\d+)\.jpg/i);
+    if (m) return "https://cdn.aqdstatic.com:966/age/covers/" + m[1] + ".jpg";
+    return raw;
+  }
+
   // 首页 / 最近更新的卡片都是 div.video_item
   parseVideoItems(doc) {
     const items = [];
@@ -147,7 +159,7 @@ class DefaultExtension extends MProvider {
       if (!a || !img) continue;
       const name = (a.text || "").trim();
       const link = a.attr("href") || "";
-      const imageUrl = img.attr("data-original") || img.attr("src") || "";
+      const imageUrl = this.coverUrl(img.attr("data-original") || img.attr("src") || "");
       if (!name || !link) continue;
       items.push({
         name: this.fixText(name),
@@ -191,7 +203,7 @@ class DefaultExtension extends MProvider {
       if (!a) continue;
       const name = (a.text || "").trim();
       const link = a.attr("href") || "";
-      const imageUrl = img ? (img.attr("data-original") || img.attr("src") || "") : "";
+      const imageUrl = img ? this.coverUrl(img.attr("data-original") || img.attr("src") || "") : "";
       if (!name || !link) continue;
       items.push({
         name: this.fixText(name),
@@ -233,7 +245,7 @@ class DefaultExtension extends MProvider {
     let name = titleEl ? (titleEl.text || "") : "";
     name = name.split(" - ")[0].trim();
     const cover = doc.selectFirst("img.video_thumbs");
-    const imageUrl = cover ? (cover.attr("data-original") || cover.attr("src") || "") : "";
+    const imageUrl = cover ? this.coverUrl(cover.attr("data-original") || cover.attr("src") || "") : "";
     const meta = doc.selectFirst('meta[name="description"]');
     const description = meta ? this.fixText(meta.attr("content") || "") : "";
     // 只取默认（第一个）播放源的剧集，避免 8 个源重复
@@ -283,6 +295,39 @@ class DefaultExtension extends MProvider {
         if (interval) clearInterval(interval);
         window.flutter_inappwebview.callHandler("setResponse", JSON.stringify(value));
       }
+      // v0.0.8：解析器用 MSE/hls.js 时 <video> 的 currentSrc 是 blob:，直链只在网络记录里。
+      // 所以除了扫 <video>，还要扫 performance 网络记录（与 DM84 v0.0.8、loadPlayPageVideo 同一套）。
+      function isAdUrl(u) {
+        if (!u) return true;
+        var low = u.toLowerCase();
+        if (low.indexOf("adposter") !== -1) return true;
+        if (low.indexOf("kjjsaas-sh") !== -1) return true;
+        if (low.indexOf("pujing") !== -1) return true;
+        if (low.indexOf("xinpu") !== -1) return true;
+        if (low.indexOf("casino") !== -1) return true;
+        if (low.indexOf("aomen") !== -1) return true;
+        if (low.indexOf("promo") !== -1) return true;
+        if (low.indexOf("banner") !== -1) return true;
+        if (/\/ad[\/_-]/i.test(u)) return true;
+        if (/[\/_-]ad[\/_.-]/i.test(u)) return true;
+        return false;
+      }
+      function isContentCdn(u) {
+        return u.indexOf("akamaized") !== -1 || u.indexOf("wuzhoupai") !== -1;
+      }
+      function pickBest(list) {
+        var best = null, bestScore = -1;
+        for (var i = 0; i < list.length; i++) {
+          var u = list[i];
+          if (isAdUrl(u)) continue;
+          var score = 0;
+          if (isContentCdn(u)) score += 10;
+          if (/\.mp4(\?|$)/.test(u)) score += 5;
+          else if (/\.m3u8(\?|$)/.test(u)) score += 2;
+          if (score > bestScore) { bestScore = score; best = u; }
+        }
+        return best;
+      }
       function tryPlay() {
         // 每轮都主动触发一次播放：静音 play + 点播放按钮 + 点播放器容器本身
         var videos = document.querySelectorAll("video");
@@ -327,13 +372,25 @@ class DefaultExtension extends MProvider {
             return;
           }
         }
+        // v0.0.8：播放器用 MSE 时 <video> 的 src 是 blob:，直链在网络记录里
+        try {
+          var entries = performance.getEntriesByType("resource") || [];
+          var cands = [];
+          for (var k = 0; k < entries.length; k++) {
+            var name = entries[k].name || "";
+            if (name.indexOf(".m3u8") === -1 && name.indexOf(".mp4") === -1) continue;
+            cands.push(name);
+          }
+          var best = pickBest(cands);
+          if (best) { send({url: best, error: ""}); return; }
+        } catch (e) {}
         // 解析器出错时会显示 #error；一直停在 #loading 说明还没跑完，继续等
         var errEl = document.querySelector("#error");
         if (errEl && errEl.offsetParent !== null && errEl.innerText && errEl.innerText.trim()) {
           send({url: "", error: "parser-error"});
           return;
         }
-        if (Date.now() - started > 28000) send({url: "", error: "timeout"});
+        if (Date.now() - started > 55000) send({url: "", error: "timeout"});
       }
       interval = setInterval(poll, 500);
       poll();
