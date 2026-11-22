@@ -7,7 +7,7 @@ const mangayomiSources = [{
   "typeSource": "single",
   "itemType": 1,
   "isNsfw": false,
-  "version": "0.0.3",
+  "version": "0.0.4",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "anime/src/zh/yhdm.js"
@@ -237,6 +237,98 @@ class DefaultExtension extends MProvider {
     }
   }
 
+  // ---- duplicate-entry fallback (v0.0.4) ----
+  // yhdmg.com has many duplicate entries for the same show (different
+  // collection sources): one entry's lines can be all dead (lzcdn31 404,
+  // ffzy 403, or no line 2/3 at all) while a duplicate's line works.
+  // When every sid fails, search for near-identical titles and try their
+  // play pages for the same episode number.
+  normalizeName(name) {
+    return (name || "").replace(/\s+/g, "");
+  }
+
+  seasonOf(name) {
+    const n = this.normalizeName(name);
+    const m = n.match(/第([一二三四五六七八九十\d]+)季/);
+    if (m) {
+      const c = m[1];
+      if (/^\d+$/.test(c)) return parseInt(c, 10);
+      const map = { "一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10 };
+      return map[c] || 0;
+    }
+    // trailing digit season, e.g. 魔法姐妹露露与莉莉2
+    const t = n.match(/([1-9])$/);
+    if (t && n.length > 5) return parseInt(t[1], 10);
+    return 0;
+  }
+
+  coreOf(name) {
+    let n = this.normalizeName(name);
+    n = n.replace(/(动画版|動畫版|20\d\d)$/, "");
+    n = n.replace(/第[一二三四五六七八九十\d]+季$/, "");
+    if (n.length > 5) n = n.replace(/[1-9]$/, "");
+    return n;
+  }
+
+  // Same show/season? Cores must match; seasons must agree when both
+  // specify one. 特別篇 is kept in the core, so it never matches a
+  // regular entry (different content).
+  isSameTitle(a, b) {
+    if (!a || !b) return false;
+    const ca = this.coreOf(a), cb = this.coreOf(b);
+    if (!ca || !cb || ca !== cb) return false;
+    const sa = this.seasonOf(a), sb = this.seasonOf(b);
+    return sa === 0 || sb === 0 || sa === sb;
+  }
+
+  async searchDuplicates(title) {
+    try {
+      const r = await new Client().get(
+        this.getBaseUrl() + "/index.php/ajax/suggest?mid=1&wd=" + encodeURIComponent(title),
+        this.headers()
+      );
+      const d = JSON.parse(r.body || "");
+      return (d && d.list) || [];
+    } catch (_) {
+      return [];
+    }
+  }
+
+  async resolveViaDuplicates(vid, nid, title) {
+    // Search with the CORE name (season/suffix stripped): the suggest API
+    // matches on the query string, so the full title only returns itself,
+    // while the core returns every duplicate entry of the show.
+    const cands = await this.searchDuplicates(this.coreOf(title) || title);
+    for (const c of cands.slice(0, 8)) {
+      const cid = c.id;
+      if (!cid || String(cid) === String(vid)) continue;
+      if (!this.isSameTitle(title, c.name || "")) continue;
+      for (const sid of ["2", "1", "3"]) {
+        const purl = this.getBaseUrl() + "/index.php/vod/play/id/" + cid + "/sid/" + sid + "/nid/" + nid + ".html";
+        let body = "";
+        try {
+          const r = await new Client().get(purl, this.headers());
+          body = r.body || "";
+        } catch (_) { continue; }
+        if (!body) continue;
+        const stream = this.extractM3u8(body);
+        if (!stream || !/^https?:\/\/.+\.m3u8/.test(stream)) continue;
+        const ok = await this.validateM3u8(stream, purl);
+        if (!ok) continue;
+        return [{
+          url: stream,
+          originalUrl: stream,
+          quality: "Origin",
+          headers: {
+            "Referer": purl,
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+          }
+        }];
+      }
+    }
+    return [];
+  }
+
   async getVideoList(url) {
     const playUrl = this.fullUrl(url);
     const m = playUrl.match(/\/vod\/play\/id\/(\d+)\/sid\/(\d+)\/nid\/(\d+)\.html/);
@@ -270,6 +362,18 @@ class DefaultExtension extends MProvider {
           "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
         }
       }];
+    }
+    // Every line dead for this entry: try duplicate entries of the same title.
+    let title = "";
+    try {
+      const dr = await new Client().get(this.getBaseUrl() + "/index.php/vod/detail/id/" + vid + ".html", this.headers());
+      const doc = new Document(dr.body || "");
+      const h1 = doc.selectFirst("h1");
+      title = this.stringUTF8(h1 ? h1.text.trim() : "");
+    } catch (_) { }
+    if (title) {
+      const dup = await this.resolveViaDuplicates(vid, nid, title);
+      if (dup.length) return dup;
     }
     return [];
   }
