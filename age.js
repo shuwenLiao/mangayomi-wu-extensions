@@ -7,12 +7,259 @@ const mangayomiSources = [{
   "typeSource": "single",
   "itemType": 1,
   "isNsfw": false,
-  "version": "0.0.12",
+  "version": "0.0.13",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "age.js"
 }];
 
+// v0.0.13: 纯 JS 密码学（MD5 + AES-128-CBC），不依赖 WASM/WebView。
+// hxm_encrypt/hxm_decrypt 的密钥与 IV 都是 "ni po jie ni  **"（16 字节），
+// 从解析器 WASM (jx.wuzhoupai.com.wasm) 内存中提取并经服务端验证通过。
+// 0.0.12 的 WebView 路线失败是因为手机上 WASM 域名 cdn.xmfxgjzx.com 不加载；
+// 这版直接用扩展自带的 Client 调 Api.php，全程不需要 WASM。
+// ---------- MD5 (RFC 1321) ----------
+function md5hex(str) {
+  // str is a JS string; encode as UTF-8 bytes (inputs here are ASCII)
+  var bytes = [];
+  for (var i = 0; i < str.length; i++) {
+    var c = str.charCodeAt(i);
+    if (c < 128) bytes.push(c);
+    else if (c < 2048) { bytes.push(0xc0 | (c >> 6), 0x80 | (c & 63)); }
+    else if (c < 65536) { bytes.push(0xe0 | (c >> 12), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63)); }
+    else { bytes.push(0xf0 | (c >> 18), 0x80 | ((c >> 12) & 63), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63)); }
+  }
+  var origLen = bytes.length;
+  bytes.push(0x80);
+  while (bytes.length % 64 !== 56) bytes.push(0);
+  var bitLen = origLen * 8;
+  // 64-bit little-endian length; high 32 bits are 0 for our short inputs
+  bytes.push(bitLen & 0xff, (bitLen >>> 8) & 0xff, (bitLen >>> 16) & 0xff, (bitLen >>> 24) & 0xff, 0, 0, 0, 0);
+  function rol(x, n) { return ((x << n) | (x >>> (32 - n))) >>> 0; }
+  function f1(x, y, z) { return (x & y) | (~x & z); }
+  function f2(x, y, z) { return (x & z) | (y & ~z); }
+  function f3(x, y, z) { return x ^ y ^ z; }
+  function f4(x, y, z) { return y ^ (x | ~z); }
+  var K = [];
+  for (var i = 0; i < 64; i++) K.push(Math.floor(Math.abs(Math.sin(i + 1)) * 4294967296) >>> 0);
+  var S = [7,12,17,22, 7,12,17,22, 7,12,17,22, 7,12,17,22,
+           5,9,14,20, 5,9,14,20, 5,9,14,20, 5,9,14,20,
+           4,11,16,23, 4,11,16,23, 4,11,16,23, 4,11,16,23,
+           6,10,15,21, 6,10,15,21, 6,10,15,21, 6,10,15,21];
+  var a0 = 0x67452301, b0 = 0xefcdab89, c0 = 0x98badcfe, d0 = 0x10325476;
+  for (var off = 0; off < bytes.length; off += 64) {
+    var M = [];
+    for (var j = 0; j < 16; j++) {
+      M.push((bytes[off + j * 4] | (bytes[off + j * 4 + 1] << 8) | (bytes[off + j * 4 + 2] << 16) | (bytes[off + j * 4 + 3] << 24)) >>> 0);
+    }
+    var A = a0, B = b0, C = c0, D = d0;
+    for (var i = 0; i < 64; i++) {
+      var F, g;
+      if (i < 16) { F = f1(B, C, D); g = i; }
+      else if (i < 32) { F = f2(B, C, D); g = (5 * i + 1) % 16; }
+      else if (i < 48) { F = f3(B, C, D); g = (3 * i + 5) % 16; }
+      else { F = f4(B, C, D); g = (7 * i) % 16; }
+      F = (F + A + K[i] + M[g]) >>> 0;
+      A = D; D = C; C = B;
+      B = (B + rol(F, S[i])) >>> 0;
+    }
+    a0 = (a0 + A) >>> 0; b0 = (b0 + B) >>> 0; c0 = (c0 + C) >>> 0; d0 = (d0 + D) >>> 0;
+  }
+  function hex32(x) {
+    var s = '';
+    for (var i = 0; i < 4; i++) s += ('0' + ((x >>> (i * 8)) & 0xff).toString(16)).slice(-2);
+    return s;
+  }
+  return hex32(a0) + hex32(b0) + hex32(c0) + hex32(d0);
+}
+
+// ---------- AES-128 ----------
+var AES_SBOX = [
+  0x63,0x7c,0x77,0x7b,0xf2,0x6b,0x6f,0xc5,0x30,0x01,0x67,0x2b,0xfe,0xd7,0xab,0x76,
+  0xca,0x82,0xc9,0x7d,0xfa,0x59,0x47,0xf0,0xad,0xd4,0xa2,0xaf,0x9c,0xa4,0x72,0xc0,
+  0xb7,0xfd,0x93,0x26,0x36,0x3f,0xf7,0xcc,0x34,0xa5,0xe5,0xf1,0x71,0xd8,0x31,0x15,
+  0x04,0xc7,0x23,0xc3,0x18,0x96,0x05,0x9a,0x07,0x12,0x80,0xe2,0xeb,0x27,0xb2,0x75,
+  0x09,0x83,0x2c,0x1a,0x1b,0x6e,0x5a,0xa0,0x52,0x3b,0xd6,0xb3,0x29,0xe3,0x2f,0x84,
+  0x53,0xd1,0x00,0xed,0x20,0xfc,0xb1,0x5b,0x6a,0xcb,0xbe,0x39,0x4a,0x4c,0x58,0xcf,
+  0xd0,0xef,0xaa,0xfb,0x43,0x4d,0x33,0x85,0x45,0xf9,0x02,0x7f,0x50,0x3c,0x9f,0xa8,
+  0x51,0xa3,0x40,0x8f,0x92,0x9d,0x38,0xf5,0xbc,0xb6,0xda,0x21,0x10,0xff,0xf3,0xd2,
+  0xcd,0x0c,0x13,0xec,0x5f,0x97,0x44,0x17,0xc4,0xa7,0x7e,0x3d,0x64,0x5d,0x19,0x73,
+  0x60,0x81,0x4f,0xdc,0x22,0x2a,0x90,0x88,0x46,0xee,0xb8,0x14,0xde,0x5e,0x0b,0xdb,
+  0xe0,0x32,0x3a,0x0a,0x49,0x06,0x24,0x5c,0xc2,0xd3,0xac,0x62,0x91,0x95,0xe4,0x79,
+  0xe7,0xc8,0x37,0x6d,0x8d,0xd5,0x4e,0xa9,0x6c,0x56,0xf4,0xea,0x65,0x7a,0xae,0x08,
+  0xba,0x78,0x25,0x2e,0x1c,0xa6,0xb4,0xc6,0xe8,0xdd,0x74,0x1f,0x4b,0xbd,0x8b,0x8a,
+  0x70,0x3e,0xb5,0x66,0x48,0x03,0xf6,0x0e,0x61,0x35,0x57,0xb9,0x86,0xc1,0x1d,0x9e,
+  0xe1,0xf8,0x98,0x11,0x69,0xd9,0x8e,0x94,0x9b,0x1e,0x87,0xe9,0xce,0x55,0x28,0xdf,
+  0x8c,0xa1,0x89,0x0d,0xbf,0xe6,0x42,0x68,0x41,0x99,0x2d,0x0f,0xb0,0x54,0xbb,0x16];
+var AES_INV_SBOX = [
+  0x52,0x09,0x6a,0xd5,0x30,0x36,0xa5,0x38,0xbf,0x40,0xa3,0x9e,0x81,0xf3,0xd7,0xfb,
+  0x7c,0xe3,0x39,0x82,0x9b,0x2f,0xff,0x87,0x34,0x8e,0x43,0x44,0xc4,0xde,0xe9,0xcb,
+  0x54,0x7b,0x94,0x32,0xa6,0xc2,0x23,0x3d,0xee,0x4c,0x95,0x0b,0x42,0xfa,0xc3,0x4e,
+  0x08,0x2e,0xa1,0x66,0x28,0xd9,0x24,0xb2,0x76,0x5b,0xa2,0x49,0x6d,0x8b,0xd1,0x25,
+  0x72,0xf8,0xf6,0x64,0x86,0x68,0x98,0x16,0xd4,0xa4,0x5c,0xcc,0x5d,0x65,0xb6,0x92,
+  0x6c,0x70,0x48,0x50,0xfd,0xed,0xb9,0xda,0x5e,0x15,0x46,0x57,0xa7,0x8d,0x9d,0x84,
+  0x90,0xd8,0xab,0x00,0x8c,0xbc,0xd3,0x0a,0xf7,0xe4,0x58,0x05,0xb8,0xb3,0x45,0x06,
+  0xd0,0x2c,0x1e,0x8f,0xca,0x3f,0x0f,0x02,0xc1,0xaf,0xbd,0x03,0x01,0x13,0x8a,0x6b,
+  0x3a,0x91,0x11,0x41,0x4f,0x67,0xdc,0xea,0x97,0xf2,0xcf,0xce,0xf0,0xb4,0xe6,0x73,
+  0x96,0xac,0x74,0x22,0xe7,0xad,0x35,0x85,0xe2,0xf9,0x37,0xe8,0x1c,0x75,0xdf,0x6e,
+  0x47,0xf1,0x1a,0x71,0x1d,0x29,0xc5,0x89,0x6f,0xb7,0x62,0x0e,0xaa,0x18,0xbe,0x1b,
+  0xfc,0x56,0x3e,0x4b,0xc6,0xd2,0x79,0x20,0x9a,0xdb,0xc0,0xfe,0x78,0xcd,0x5a,0xf4,
+  0x1f,0xdd,0xa8,0x33,0x88,0x07,0xc7,0x31,0xb1,0x12,0x10,0x59,0x27,0x80,0xec,0x5f,
+  0x60,0x51,0x7f,0xa9,0x19,0xb5,0x4a,0x0d,0x2d,0xe5,0x7a,0x9f,0x93,0xc9,0x9c,0xef,
+  0xa0,0xe0,0x3b,0x4d,0xae,0x2a,0xf5,0xb0,0xc8,0xeb,0xbb,0x3c,0x83,0x53,0x99,0x61,
+  0x17,0x2b,0x04,0x7e,0xba,0x77,0xd6,0x26,0xe1,0x69,0x14,0x63,0x55,0x21,0x0c,0x7d];
+var AES_RCON = [0x01,0x02,0x04,0x08,0x10,0x20,0x40,0x80,0x1b,0x36];
+
+function aesExpandKey(keyBytes) {
+  var w = [];
+  for (var i = 0; i < 4; i++) w.push([keyBytes[i*4], keyBytes[i*4+1], keyBytes[i*4+2], keyBytes[i*4+3]]);
+  for (var i = 4; i < 44; i++) {
+    var temp = w[i-1].slice();
+    if (i % 4 === 0) {
+      temp = [AES_SBOX[temp[1]] ^ AES_RCON[i/4 - 1], AES_SBOX[temp[2]], AES_SBOX[temp[3]], AES_SBOX[temp[0]]];
+    }
+    w.push([w[i-4][0] ^ temp[0], w[i-4][1] ^ temp[1], w[i-4][2] ^ temp[2], w[i-4][3] ^ temp[3]]);
+  }
+  return w;
+}
+function aesAddRoundKey(state, w, round) {
+  for (var c = 0; c < 4; c++)
+    for (var r = 0; r < 4; r++)
+      state[r][c] ^= w[round * 4 + c][r];
+}
+function aesSubBytes(state, inv) {
+  var box = inv ? AES_INV_SBOX : AES_SBOX;
+  for (var r = 0; r < 4; r++)
+    for (var c = 0; c < 4; c++)
+      state[r][c] = box[state[r][c]];
+}
+function aesShiftRows(state, inv) {
+  for (var r = 1; r < 4; r++) {
+    var row = [state[r][0], state[r][1], state[r][2], state[r][3]];
+    for (var c = 0; c < 4; c++) state[r][c] = inv ? row[(c - r + 4) % 4] : row[(c + r) % 4];
+  }
+}
+function xtime(a) { return ((a << 1) ^ ((a & 0x80) ? 0x1b : 0)) & 0xff; }
+function gmul(a, b) {
+  var p = 0;
+  for (var i = 0; i < 8; i++) {
+    if (b & 1) p ^= a;
+    var hi = a & 0x80;
+    a = (a << 1) & 0xff;
+    if (hi) a ^= 0x1b;
+    b >>= 1;
+  }
+  return p;
+}
+function aesMixColumns(state, inv) {
+  for (var c = 0; c < 4; c++) {
+    var a0 = state[0][c], a1 = state[1][c], a2 = state[2][c], a3 = state[3][c];
+    if (!inv) {
+      state[0][c] = gmul(a0,2) ^ gmul(a1,3) ^ a2 ^ a3;
+      state[1][c] = a0 ^ gmul(a1,2) ^ gmul(a2,3) ^ a3;
+      state[2][c] = a0 ^ a1 ^ gmul(a2,2) ^ gmul(a3,3);
+      state[3][c] = gmul(a0,3) ^ a1 ^ a2 ^ gmul(a3,2);
+    } else {
+      state[0][c] = gmul(a0,14) ^ gmul(a1,11) ^ gmul(a2,13) ^ gmul(a3,9);
+      state[1][c] = gmul(a0,9) ^ gmul(a1,14) ^ gmul(a2,11) ^ gmul(a3,13);
+      state[2][c] = gmul(a0,13) ^ gmul(a1,9) ^ gmul(a2,14) ^ gmul(a3,11);
+      state[3][c] = gmul(a0,11) ^ gmul(a1,13) ^ gmul(a2,9) ^ gmul(a3,14);
+    }
+  }
+}
+function aesEncryptBlock(block, w) {
+  var s = [[],[],[],[]];
+  for (var c = 0; c < 4; c++) for (var r = 0; r < 4; r++) s[r][c] = block[c*4 + r];
+  aesAddRoundKey(s, w, 0);
+  for (var round = 1; round < 10; round++) {
+    aesSubBytes(s, false); aesShiftRows(s, false); aesMixColumns(s, false); aesAddRoundKey(s, w, round);
+  }
+  aesSubBytes(s, false); aesShiftRows(s, false); aesAddRoundKey(s, w, 10);
+  var out = [];
+  for (var c = 0; c < 4; c++) for (var r = 0; r < 4; r++) out.push(s[r][c]);
+  return out;
+}
+function aesDecryptBlock(block, w) {
+  var s = [[],[],[],[]];
+  for (var c = 0; c < 4; c++) for (var r = 0; r < 4; r++) s[r][c] = block[c*4 + r];
+  aesAddRoundKey(s, w, 10);
+  for (var round = 9; round >= 1; round--) {
+    aesShiftRows(s, true); aesSubBytes(s, true); aesAddRoundKey(s, w, round); aesMixColumns(s, true);
+  }
+  aesShiftRows(s, true); aesSubBytes(s, true); aesAddRoundKey(s, w, 0);
+  var out = [];
+  for (var c = 0; c < 4; c++) for (var r = 0; r < 4; r++) out.push(s[r][c]);
+  return out;
+}
+function strToBytes(s) {
+  var b = [];
+  for (var i = 0; i < s.length; i++) {
+    var c = s.charCodeAt(i);
+    if (c < 128) b.push(c);
+    else if (c < 2048) { b.push(0xc0 | (c >> 6), 0x80 | (c & 63)); }
+    else { b.push(0xe0 | (c >> 12), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63)); }
+  }
+  return b;
+}
+function bytesToStr(b) {
+  var s = '';
+  for (var i = 0; i < b.length; i++) s += String.fromCharCode(b[i]);
+  return s;
+}
+function bytesToHex(b) {
+  var s = '';
+  for (var i = 0; i < b.length; i++) s += ('0' + b[i].toString(16)).slice(-2);
+  return s;
+}
+function hexToBytes(h) {
+  var b = [];
+  for (var i = 0; i < h.length; i += 2) b.push(parseInt(h.substr(i, 2), 16));
+  return b;
+}
+function aesCbcEncryptBytes(plainBytes, keyBytes, ivBytes) {
+  var w = aesExpandKey(keyBytes);
+  var data = plainBytes.slice();
+  var pad = 16 - (data.length % 16);
+  for (var i = 0; i < pad; i++) data.push(pad);
+  var out = [], prev = ivBytes.slice();
+  for (var off = 0; off < data.length; off += 16) {
+    var block = [];
+    for (var j = 0; j < 16; j++) block.push(data[off + j] ^ prev[j]);
+    var enc = aesEncryptBlock(block, w);
+    out = out.concat(enc);
+    prev = enc;
+  }
+  return out;
+}
+function aesCbcDecryptBytes(cipherBytes, keyBytes, ivBytes) {
+  var w = aesExpandKey(keyBytes);
+  var out = [], prev = ivBytes.slice();
+  for (var off = 0; off < cipherBytes.length; off += 16) {
+    var block = cipherBytes.slice(off, off + 16);
+    var dec = aesDecryptBlock(block, w);
+    for (var j = 0; j < 16; j++) dec[j] ^= prev[j];
+    out = out.concat(dec);
+    prev = block;
+  }
+  // strip PKCS7
+  var pad = out[out.length - 1];
+  if (pad >= 1 && pad <= 16) out = out.slice(0, out.length - pad);
+  return out;
+}
+// hxm_encrypt / hxm_decrypt equivalents (key = IV = "ni po jie ni  **")
+var HXM_KEY = strToBytes('ni po jie ni  **');
+function hxmEncryptJS(plaintext) {
+  return bytesToHex(aesCbcEncryptBytes(strToBytes(plaintext), HXM_KEY, HXM_KEY));
+}
+function hxmDecryptJS(hexCipher) {
+  return bytesToStr(aesCbcDecryptBytes(hexToBytes(hexCipher), HXM_KEY, HXM_KEY));
+}
+// response AES-CBC decrypt (key = MD5hex[0:16] Latin1, IV = MD5hex[16:32])
+function aesCbcDeJS(hexData, md5hex) {
+  var key = strToBytes(md5hex.substring(0, 16));
+  var iv = strToBytes(md5hex.substring(16, 32));
+  return bytesToStr(aesCbcDecryptBytes(hexToBytes(hexData), key, iv));
+}
 class DefaultExtension extends MProvider {
   stringUTF8(text, d) {
     if (!d) {
@@ -277,6 +524,86 @@ class DefaultExtension extends MProvider {
       genre: [],
       episodes: eps
     };
+  }
+
+  // v0.0.13：API 直连（纯 JS，不用 WASM/WebView）。
+  // 0.0.12 的 WebView 路线在手机上跑不通：WASM 域名 cdn.xmfxgjzx.com 不加载，
+  // hxm_encrypt 永远等不到，40 秒超时后只能退回扫描。根因已解决——
+  // hxm_encrypt 的密钥/IV 已从 WASM 内存提取：都是 "ni po jie ni  **"，AES-128-CBC，
+  // 服务端已验证纯 JS 实现与 WASM 输出逐字节一致。
+  // 这版直接用扩展 Client：取解析器页 HTML（正则抠 Vurl/Time/Version/Ref），
+  // 纯 JS 算 Params/Sign，POST Api.php，纯 JS 解密，全程不碰 WASM。
+  uuidv4() {
+    var chars = "0123456789ABCDEF";
+    var u = "";
+    for (var i = 0; i < 36; i++) {
+      if (i === 8 || i === 13 || i === 18 || i === 23) { u += "-"; continue; }
+      if (i === 14) { u += "4"; continue; }
+      var r = Math.floor(Math.random() * 16);
+      if (i === 19) r = (r & 0x3) | 0x8;
+      u += chars[r];
+    }
+    return u;
+  }
+
+  async loadParserApiDirect(parserUrl, playUrl) {
+    const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
+    // 1. 取解析器页 HTML，正则抠全局变量
+    let html = "";
+    try {
+      const res = await new Client().get(parserUrl, { "User-Agent": UA, "Referer": playUrl });
+      html = res ? (res.body || "") : "";
+    } catch (e) { return { url: "", error: "parser-get-fail" }; }
+    if (!html) return { url: "", error: "parser-empty" };
+    const pick = (re) => { const m = html.match(re); return m ? m[1] : ""; };
+    const Vurl = pick(/var Vurl = "([0-9A-F]+)"/);
+    const Time = pick(/var Time = "(\d+)"/);
+    const Version = pick(/var Version = "([^"]+)"/);
+    const Ref = pick(/var Ref = "([^"]+)"/);
+    if (!Vurl || !Time || !Version || !Ref) return { url: "", error: "no-globals" };
+    const Host = "jx.wuzhoupai.com";
+    const Api = "https://jx.wuzhoupai.com:8443/vip";
+    // 2. 纯 JS 算 Params / Sign（服务端已验证：与 WASM 输出一致）
+    const uuid = this.uuidv4();
+    const payload = JSON.stringify({ url: Vurl, wap: "1", ios: "0", host: Host, referer: Ref, time: Time });
+    let Params, Sign;
+    try {
+      Params = hxmEncryptJS(payload).toUpperCase();
+      Sign = hxmEncryptJS(Host + " | " + uuid + " | " + Time + " | " + Version + " | " + Params).toUpperCase();
+    } catch (e) { return { url: "", error: "encrypt-fail" }; }
+    // 3. POST Api.php
+    let apiRes = null;
+    try {
+      apiRes = await new Client().post(Api + "/Api.php", {
+        "User-Agent": UA,
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Video-Parse-Uuid": uuid,
+        "Video-Parse-Time": String(Time),
+        "Video-Parse-Version": Version,
+        "Video-Parse-Sign": Sign,
+        "Referer": parserUrl
+      }, "Params=" + encodeURIComponent(Params));
+    } catch (e) { return { url: "", error: "api-post-fail" }; }
+    let resp = null;
+    try { resp = JSON.parse((apiRes && apiRes.body) || ""); } catch (_) { return { url: "", error: "bad-json" }; }
+    if (!resp || resp.Status != 1) return { url: "", error: "api-status" };
+    // 4. 纯 JS 解密
+    try {
+      if (resp.Code == 10) {
+        const ctId = pick(/<meta http-equiv="Content-Type"[^>]*id="([^"]+)"/);
+        const vpId = pick(/<meta name="viewport"[^>]*id="([^"]+)"/);
+        const i1 = (ctId + vpId).replace("viewport", "");
+        const k = md5hex(String(resp.Code) + i1 + resp.Appkey + resp.Version);
+        const info = JSON.parse(aesCbcDeJS(resp.Data, k));
+        return { url: decodeURIComponent(hxmDecryptJS(info.url)), error: "" };
+      } else {
+        const k2 = md5hex(String(resp.Code) + resp.Appkey + resp.Version);
+        const info2 = JSON.parse(aesCbcDeJS(resp.Data, k2));
+        return { url: decodeURIComponent(info2.url), error: "" };
+      }
+    } catch (e) {
+      return { url: "", error: "decrypt-fail" };
+    }
   }
 
   // v0.0.12：API 直连路线（2026-11-22 22:45 服务端跑通）。
@@ -758,13 +1085,20 @@ class DefaultExtension extends MProvider {
       if (direct) parserUrl = direct[0];
     }
     if (parserUrl) {
-      // v0.0.12：先走 API 直连（解析器返回的权威地址）；直链才返回，
-      // xvip 这类非直链不返回（避免转 00:00），直接留空走 WebView。
-      // API 本身出错/超时才退回 performance 扫描。
-      const api = await this.loadParserApiVideo(parserUrl, this.fullUrl(url));
+      // v0.0.13：先走纯 JS API 直连（Client，不用 WASM/WebView）。
+      // 直链才返回；xvip 这类非直链不返回（避免转 00:00），直接留空走 WebView。
+      const api = await this.loadParserApiDirect(parserUrl, this.fullUrl(url));
       if (api.url) {
         if (this.isDirectStream(api.url)) {
           return [{ url: api.url, originalUrl: api.url, quality: "Origin" }];
+        }
+        return [];
+      }
+      // API 直连失败：退回 0.0.12 的 WebView API 路线，再退回 performance 扫描。
+      const apiWv = await this.loadParserApiVideo(parserUrl, this.fullUrl(url));
+      if (apiWv.url) {
+        if (this.isDirectStream(apiWv.url)) {
+          return [{ url: apiWv.url, originalUrl: apiWv.url, quality: "Origin" }];
         }
         return [];
       }
