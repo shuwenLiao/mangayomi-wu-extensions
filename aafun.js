@@ -7,7 +7,7 @@ const mangayomiSources = [{
   "typeSource": "single",
   "itemType": 1,
   "isNsfw": false,
-  "version": "0.0.3",
+  "version": "0.0.4",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "aafun.js"
@@ -16,11 +16,20 @@ const mangayomiSources = [{
 // aafun（月之祠 moonci.com）。搜索/详情/剧集都是静态 HTML，可直接解析；
 // 播放页没有直链，player_aaaa 里 "url" 是 percent 编码后的另一个播放页
 // （next.xifanacg.com/anime/…/play/…），需再跟一跳才有视频。
-// 链路：播放页 → 解出 next.xifanacg.com 地址 → 抓它页面的直链；
-// 抓不到就用内置浏览器打开它，从 <video> 上读直链（并主动触发播放，
-// 因为后台 WebView 默认禁自动播放，光等 currentSrc 可能一直是空的）。
+// v0.0.4：下一跳是 Xfani 的 Next.js 站，页面 HTML 里根本没有视频地址，
+// 它是浏览器里调 Supabase Edge Function "issue-web-playback" 拿直链的。
+// 扩展直接调同一个接口：POST api.xifanacg.com/functions/v1/issue-web-playback，
+// body {"action":"fallback","episode_id":…}，返回直链 mp4/m3u8（含各线路 candidates）。
+// 链路：播放页 → 解出 next.xifanacg.com 地址 → 从中取 episode_id → 调接口拿直链；
+// 接口失败才退回抓下一跳页面 / WebView。
 
 const AAFUN_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
+
+// Xfani 播放接口：Supabase Edge Function issue-web-playback。
+// apikey 是网站前端公开的 publishable key（写在其 JS 里），
+// 和网站本身调的是同一个接口、同一把钥匙。
+const XF_PLAY_API = "https://api.xifanacg.com/functions/v1/issue-web-playback";
+const XF_API_KEY = "sb_publishable_OBIVAWACIX6lPXrO98_z24_HcsmalkA";
 
 class DefaultExtension extends MProvider {
   stringUTF8(text, d) {
@@ -311,6 +320,49 @@ class DefaultExtension extends MProvider {
     }
   }
 
+  // Xfani 播放接口：从 next.xifanacg.com/anime/<id>/play/<episodeId> 里取
+  // episodeId，调 issue-web-playback 拿直链。返回的 url 是带签名的直链
+  //（几小时过期，每次现取现用）；candidates 是各线路，名字就是线路名。
+  async resolveXfaniPlayback(nextUrl) {
+    const m = /\/play\/(\d+)/.exec(nextUrl || "");
+    if (!m) return [];
+    let data = null;
+    try {
+      const res = await new Client().post(XF_PLAY_API, {
+        "Content-Type": "application/json",
+        "apikey": XF_API_KEY,
+        "Authorization": "Bearer " + XF_API_KEY,
+        "User-Agent": AAFUN_UA
+      }, JSON.stringify({ action: "fallback", episode_id: parseInt(m[1], 10) }));
+      data = JSON.parse(res.body || "");
+    } catch (e) {
+      return [];
+    }
+    if (!data || !data.ok) return [];
+    const items = [];
+    const seen = {};
+    const push = function (u, q) {
+      if (!u || seen[u]) return;
+      seen[u] = true;
+      items.push({ url: u, originalUrl: u, quality: q || "Origin" });
+    };
+    if (data.url) {
+      let q = "Origin";
+      if (Array.isArray(data.candidates)) {
+        for (const c of data.candidates) {
+          if (c && c.url === data.url && c.source_name) { q = c.source_name; break; }
+        }
+      }
+      push(data.url, q);
+    }
+    if (Array.isArray(data.candidates)) {
+      for (const c of data.candidates) {
+        if (c && c.url) push(c.url, c.source_name || "Origin");
+      }
+    }
+    return items;
+  }
+
   async getVideoList(url) {
     const res = await new Client().get(this.fullUrl(url), this.headers());
     const body = res.body || "";
@@ -318,6 +370,11 @@ class DefaultExtension extends MProvider {
     if (found.length > 0) return found;
     const nextUrl = this.extractNextUrl(body);
     if (!nextUrl) return [];
+    // 先调 Xfani 播放接口拿直链（最快最稳）
+    if (nextUrl.indexOf("xifanacg.com") !== -1) {
+      found = await this.resolveXfaniPlayback(nextUrl);
+      if (found.length > 0) return found;
+    }
     // 跟一跳：抓下一跳播放页的直链
     try {
       const res2 = await new Client().get(nextUrl, this.headers());
