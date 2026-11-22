@@ -7,7 +7,7 @@ const mangayomiSources = [{
   "typeSource": "single",
   "itemType": 1,
   "isNsfw": false,
-  "version": "0.0.10",
+  "version": "0.0.11",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "age.js"
@@ -326,6 +326,20 @@ class DefaultExtension extends MProvider {
         if (/[\/_-]ad[\/_.-]/i.test(u)) return true;
         return false;
       }
+
+      function isVideoCandidate(u) {
+        if (!u) return false;
+        var low = u.toLowerCase();
+        if (low.indexOf(".m3u8") !== -1) return true;
+        if (low.indexOf(".mp4") !== -1) return true;
+        // v0.0.11: 解析器解密出的正片地址不一定带 .m3u8/.mp4 后缀（实测走 xvip.ymjigou.com:18443），
+        // 只认后缀会漏掉。视频 CDN 域名本身就是正片信号。
+        if (low.indexOf("ymjigou") !== -1) return true;
+        if (low.indexOf("xvip") !== -1) return true;
+        if (low.indexOf("akamaized") !== -1) return true;
+        if (low.indexOf("wuzhoupai") !== -1) return true;
+        return false;
+      }
       function isContentCdn(u) {
         return u.indexOf("akamaized") !== -1 || u.indexOf("wuzhoupai") !== -1;
       }
@@ -336,6 +350,7 @@ class DefaultExtension extends MProvider {
           if (isAdUrl(u)) continue;
           var score = 0;
           if (isContentCdn(u)) score += 10;
+          if (u.indexOf("ymjigou") !== -1 || u.indexOf("xvip") !== -1) score += 10;
           if (/\.mp4(\?|$)/.test(u)) score += 5;
           else if (/\.m3u8(\?|$)/.test(u)) score += 2;
           if (score > bestScore) { bestScore = score; best = u; }
@@ -392,7 +407,7 @@ class DefaultExtension extends MProvider {
           var cands = [];
           for (var k = 0; k < entries.length; k++) {
             var name = entries[k].name || "";
-            if (name.indexOf(".m3u8") === -1 && name.indexOf(".mp4") === -1) continue;
+            if (!isVideoCandidate(name)) continue;
             cands.push(name);
           }
           var best = pickBest(cands);
@@ -459,6 +474,20 @@ class DefaultExtension extends MProvider {
         if (/[\/_-]ad[\/_.-]/i.test(u)) return true;
         return false;
       }
+
+      function isVideoCandidate(u) {
+        if (!u) return false;
+        var low = u.toLowerCase();
+        if (low.indexOf(".m3u8") !== -1) return true;
+        if (low.indexOf(".mp4") !== -1) return true;
+        // v0.0.11: 解析器解密出的正片地址不一定带 .m3u8/.mp4 后缀（实测走 xvip.ymjigou.com:18443），
+        // 只认后缀会漏掉。视频 CDN 域名本身就是正片信号。
+        if (low.indexOf("ymjigou") !== -1) return true;
+        if (low.indexOf("xvip") !== -1) return true;
+        if (low.indexOf("akamaized") !== -1) return true;
+        if (low.indexOf("wuzhoupai") !== -1) return true;
+        return false;
+      }
       function isContentCdn(u) {
         return u.indexOf("akamaized") !== -1 || u.indexOf("wuzhoupai") !== -1;
       }
@@ -469,6 +498,7 @@ class DefaultExtension extends MProvider {
           if (isAdUrl(u)) continue;
           var score = 0;
           if (isContentCdn(u)) score += 10;
+          if (u.indexOf("ymjigou") !== -1 || u.indexOf("xvip") !== -1) score += 10;
           if (/\.mp4(\?|$)/.test(u)) score += 5;
           else if (/\.m3u8(\?|$)/.test(u)) score += 2;
           if (score > bestScore) { bestScore = score; best = u; }
@@ -521,7 +551,7 @@ class DefaultExtension extends MProvider {
           var cands = [];
           for (var k = 0; k < entries.length; k++) {
             var name = entries[k].name || "";
-            if (name.indexOf(".m3u8") === -1 && name.indexOf(".mp4") === -1) continue;
+            if (!isVideoCandidate(name)) continue;
             cands.push(name);
           }
           var best = pickBest(cands);
