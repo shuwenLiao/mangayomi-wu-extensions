@@ -7,7 +7,7 @@ const mangayomiSources = [{
   "typeSource": "single",
   "itemType": 1,
   "isNsfw": false,
-  "version": "0.0.9",
+  "version": "0.0.10",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "age.js"
@@ -292,7 +292,10 @@ class DefaultExtension extends MProvider {
   // v0.0.4：解析器页在手机 UA 下 Autoplay=false（它按 UA 判断，含 Android
   // 就不自动播放），光等 currentSrc 可能一直是空的；改成每轮主动触发播放，
   // 并把超时从 17 秒放宽到 28 秒（解析器解密+加载经常超过 17 秒）。
-  async loadParserVideo(parserUrl) {
+  // v0.0.10：解析器页（jx.wuzhoupai 云播放器）可能校验 Referer（它平时是被 agedm.io 播放页
+  // 以 iframe 嵌进去的，直接顶层打开时 Referer 为空可能拒绝解密/播放），所以带上播放页做 Referer；
+  // 另外外层 WebView 超时 32s 会先于脚本内部 55s 杀掉轮询，改成 60s 对齐。
+  async loadParserVideo(parserUrl, referer) {
     if (typeof evaluateJavascriptViaWebview !== "function") {
       return "";
     }
@@ -408,9 +411,11 @@ class DefaultExtension extends MProvider {
     })();`;
     let result;
     try {
-      result = await evaluateJavascriptViaWebview(parserUrl, {
+      const headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-      }, [script], 32);
+      };
+      if (referer) headers["Referer"] = referer;
+      result = await evaluateJavascriptViaWebview(parserUrl, headers, [script], 60);
     } catch (err) {
       return "";
     }
@@ -587,7 +592,7 @@ class DefaultExtension extends MProvider {
       if (direct) parserUrl = direct[0];
     }
     if (parserUrl) {
-      const videoUrl = await this.loadParserVideo(parserUrl);
+      const videoUrl = await this.loadParserVideo(parserUrl, this.fullUrl(url));
       if (videoUrl) return [{ url: videoUrl, originalUrl: videoUrl, quality: "Origin" }];
     }
     const playUrl = await this.loadPlayPageVideo(this.fullUrl(url));
