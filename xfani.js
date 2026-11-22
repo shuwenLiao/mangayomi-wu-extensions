@@ -7,7 +7,7 @@ const mangayomiSources = [{
   "typeSource": "single",
   "itemType": 1,
   "isNsfw": false,
-  "version": "0.0.4",
+  "version": "0.0.5",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "xfani.js"
@@ -22,14 +22,15 @@ const mangayomiSources = [{
 //   详情剧集：番剧页 HTML 是服务端渲染的，直接解析剧集链接
 //   播放：POST api.xifanacg.com/functions/v1/issue-web-playback
 //        body {"action":"fallback","episode_id":…}，返回直链 mp4/m3u8。
+// v0.0.5：播放线路。Xfani 有三条线（主线-1 xfxf1=4、主线-2 AL=1、
+//   备用-1 CS=2），站内播放器也提供这三条线切换。手机上"fallback"
+//   （一次取三条线）常失败，连站内网页播放器都报"播放地址获取失败"；
+//   改为先试 fallback，失败就逐条线单独取（单条更快、更稳），
+//   并加"播放线路"偏好（默认主线-1），按偏好顺序逐条尝试。
 // v0.0.4：API 故障转移——主 api.xifanacg.com 不通时换备
 //   supa.xifanacg.com（站内 JS 本来就有这个备域名；
 //   api2.xifandm.net 已死不用）。列表 RPC 与取视频都走这个顺序。
 //   另修标题里的 &amp; 不解码问题（JOJO 显示"第二&amp;第三赛段"）。
-// v0.0.3：去掉 0.0.2 加的 x-client-info 请求头——0.0.1（无此头）
-//   时手机上列表正常，0.0.2 加上它后列表反而刷不出，
-//   疑似手机端 Mangayomi/代理对该头处理有问题；
-//   保留 getVideoList 重试 3 次与 status 0。
 
 const XF_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 // API 有两个可用域名（站内 JS 的故障转移列表）：主 api.xifanacg.com，
@@ -37,6 +38,13 @@ const XF_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHT
 // 列表和取视频都走这个顺序（api2.xifandm.net 已死，不用）。
 const XF_API_HOSTS = ["https://api.xifanacg.com", "https://supa.xifanacg.com"];
 const XF_API_KEY = "sb_publishable_OBIVAWACIX6lPXrO98_z24_HcsmalkA";
+// 三条播放线：source_id -> 显示名。4=主线-1（moedot mp4），
+// 1=主线-2（xfvod mp4），2=备用-1（playxf m3u8）。
+const XF_LINES = [
+  { id: 4, code: "xfxf1", name: "稀饭新番主线-1" },
+  { id: 1, code: "AL", name: "稀饭新番主线-2" },
+  { id: 2, code: "CS", name: "稀饭备用-1" }
+];
 
 class DefaultExtension extends MProvider {
   stringUTF8(text, d) {
@@ -225,30 +233,37 @@ class DefaultExtension extends MProvider {
     return m ? m[1] : "";
   }
 
+  // 播放线路偏好（默认主线-1 = 4）。读不到或非法时返回 "4"。
+  getPreferredLine() {
+    try {
+      const pref = new SharedPreferences();
+      const v = pref.get("line");
+      if (v === "4" || v === "1" || v === "2") return v;
+    } catch (_) {}
+    return "4";
+  }
+
+  // 按偏好排好的 source_id 顺序：偏好在前，其余按 4,1,2 补齐。
+  lineOrder() {
+    const pref = parseInt(this.getPreferredLine(), 10);
+    const order = [pref];
+    for (const l of XF_LINES) if (order.indexOf(l.id) === -1) order.push(l.id);
+    return order;
+  }
+
+  lineName(id) {
+    for (const l of XF_LINES) if (l.id === id) return l.name;
+    return "Origin";
+  }
+
   // 播放：调 issue-web-playback 拿直链（主链 + 各线路 candidates）。
-  // 注意：手机上这一步曾返回空列表（RPC 列表接口正常，说明域名通，
-  // 只是取视频这一步不稳定）。两个 API 域名各试一次，
-  // 主域名失败就换备域名 supa.xifanacg.com。
+  // 先试 fallback（一次取三条线）；失败就逐条线单独取——
+  // 手机上 fallback 常失败（站内网页播放器也报"播放地址获取失败"），
+  // 单条更快更稳。两个 API 域名都按这个顺序试。
   async getVideoList(url) {
     const m = String(url || "").match(/\/play\/(\d+)/);
     if (!m) return [];
     const epId = parseInt(m[1], 10);
-    let data = null;
-    for (const host of XF_API_HOSTS) {
-      for (let attempt = 0; attempt < 2; attempt++) {
-        try {
-          const res = await new Client().post(host + "/functions/v1/issue-web-playback", this.apiHeaders(),
-            JSON.stringify({ action: "fallback", episode_id: epId }));
-          data = JSON.parse(res.body || "");
-          if (data && data.ok) break;
-          data = null;
-        } catch (e) {
-          data = null;
-        }
-      }
-      if (data && data.ok) break;
-    }
-    if (!data || !data.ok) return [];
     const items = [];
     const seen = {};
     const push = function (u, q) {
@@ -256,18 +271,65 @@ class DefaultExtension extends MProvider {
       seen[u] = true;
       items.push({ url: u, originalUrl: u, quality: q || "Origin" });
     };
-    if (data.url) {
-      let q = "Origin";
+    const pushData = function (data) {
+      if (!data || !data.ok) return false;
+      let got = false;
+      if (data.url) {
+        let q = "Origin";
+        if (Array.isArray(data.candidates)) {
+          for (const c of data.candidates) {
+            if (c && c.url === data.url && c.source_name) { q = c.source_name; break; }
+          }
+        }
+        push(data.url, q);
+        got = true;
+      }
       if (Array.isArray(data.candidates)) {
         for (const c of data.candidates) {
-          if (c && c.url === data.url && c.source_name) { q = c.source_name; break; }
+          if (c && c.url) { push(c.url, c.source_name || "Origin"); got = true; }
         }
       }
-      push(data.url, q);
+      return got;
+    }.bind(this);
+    const callPlayback = async function (host, body) {
+      try {
+        const res = await new Client().post(host + "/functions/v1/issue-web-playback", this.apiHeaders(),
+          JSON.stringify(body));
+        return JSON.parse(res.body || "");
+      } catch (e) {
+        return null;
+      }
+    }.bind(this);
+    // 1) fallback：一次取全部三条线
+    for (const host of XF_API_HOSTS) {
+      const data = await callPlayback(host, { action: "fallback", episode_id: epId });
+      if (pushData(data)) break;
     }
-    if (Array.isArray(data.candidates)) {
-      for (const c of data.candidates) {
-        if (c && c.url) push(c.url, c.source_name || "Origin");
+    if (items.length > 0) {
+      // 按偏好把首选线路排到最前
+      const pref = parseInt(this.getPreferredLine(), 10);
+      const prefName = this.lineName(pref);
+      items.sort(function (a, b) {
+        if (a.quality === prefName && b.quality !== prefName) return -1;
+        if (b.quality === prefName && a.quality !== prefName) return 1;
+        return 0;
+      });
+      return items;
+    }
+    // 2) fallback 失败：逐条线单独取，按偏好顺序
+    for (const sid of this.lineOrder()) {
+      for (const host of XF_API_HOSTS) {
+        const data = await callPlayback(host, { action: "fallback", episode_id: epId, source_id: sid });
+        if (data && data.ok) {
+          // 单条返回的 url 就是该线的地址
+          if (data.url) push(data.url, this.lineName(sid));
+          if (Array.isArray(data.candidates)) {
+            for (const c of data.candidates) {
+              if (c && c.url) push(c.url, c.source_name || this.lineName(sid));
+            }
+          }
+          break;
+        }
       }
     }
     return items;
@@ -286,6 +348,18 @@ class DefaultExtension extends MProvider {
         "value": "https://next.xifanacg.com",
         "dialogTitle": "URL",
         "dialogMessage": ""
+      }
+    }, {
+      // v0.0.5：播放线路。Xfani 三条线：主线-1（xfxf1，source_id 4）、
+      // 主线-2（AL，source_id 1）、备用-1（CS，source_id 2）。
+      // 偏好线路排在视频列表最前；fallback 失败时按偏好顺序逐条取。
+      "key": "line",
+      "listPreference": {
+        "title": "播放线路",
+        "summary": "主线-1 / 主线-2 / 备用-1",
+        "valueIndex": 0,
+        "entries": ["稀饭新番主线-1", "稀饭新番主线-2", "稀饭备用-1"],
+        "entryValues": ["4", "1", "2"]
       }
     }];
   }
