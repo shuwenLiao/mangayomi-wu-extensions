@@ -7,7 +7,7 @@ const mangayomiSources = [{
   "typeSource": "single",
   "itemType": 1,
   "isNsfw": false,
-  "version": "0.0.2",
+  "version": "0.0.3",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "anime1.js"
@@ -20,7 +20,14 @@ const mangayomiSources = [{
 //   → {"s":[{"src":"//hinata.v.anime1.me/2019/8b.mp4","type":"video/mp4"}]}
 // 直链是 mp4，無解析器、無廣告注入。已驗證：POST 返回 200，src 為真實 mp4。
 // 列表/搜索：首頁列出最新劇集（/<postId>）；搜索用 WordPress ?s=關鍵詞。
-// 備註：每集是獨立 post，getDetail 只回傳該集本身（單集條目），不做跨集分組。
+// 備註：每集是獨立 post。v0.0.3 起 getDetail 按整部劇分組：
+//   從本集頁抓「全集連結」/?cat=N（或 data-apireq 的 "c"），
+//   再抓分類頁 + 站內搜索，合併去重後列出該劇的劇集（按集數升序）。
+//   誠實上限（2026-11-22 實測）：本站分類頁只給最新 8 集，站內搜同名也只給最新 8 條，
+//   分頁全是壞的（/page/2/、?paged=2 不是 404 就是回最新內容，posts_per_page 參數被忽略，
+//   wp-json 401 被禁，分類 feed 404），所以長番只能列出最新 8 集
+//   （例：黑色五葉草 第二季 [171]–[178]），8 集以內的番才能列全。
+//   原生播放仍以 v0.0.2 的 WebView 路線為準（手機實測為準）。
 
 const A1_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 const A1_BASE = "https://anime1.me";
@@ -102,6 +109,36 @@ class DefaultExtension extends MProvider {
     return { list: list, hasNextPage: false };
   }
 
+  // 集數：標題尾巴的 [178] → 178；沒有就回 -1。
+  epNum(title) {
+    const m = /\[(\d+)\]\s*$/.exec(title || "");
+    return m ? parseInt(m[1], 10) : -1;
+  }
+
+  // 劇名：去掉標題尾巴的 [178]，例「黑色五葉草 第二季 [178]」→「黑色五葉草 第二季」。
+  seriesName(title) {
+    return (title || "").replace(/\s*\[\d+\]\s*$/, "").trim();
+  }
+
+  // 從一頁 HTML 裡挑出屬於該劇的劇集（標題須是「劇名 [數字]」；側欄最新文章等雜項會被濾掉）。
+  collectSeriesEpisodes(html, series) {
+    const out = [];
+    const seen = {};
+    const items = this.parseList(html || "");
+    for (let i = 0; i < items.length; i++) {
+      const t = items[i].name || "";
+      const n = this.epNum(t);
+      if (n < 0) continue;
+      if (this.seriesName(t) !== series) continue;
+      if (seen[items[i].link]) continue;
+      seen[items[i].link] = true;
+      out.push({ num: n, name: "第" + n + "集", url: items[i].link });
+    }
+    return out;
+  }
+
+  // v0.0.3：按整部劇分組。先抓本集頁拿劇名 + 分類 id，再抓分類頁（最新 8 集）
+  // 與站內搜索（最新 10 條）合併去重、按集數升序。兩路都失敗時退回單集。
   async getDetail(url) {
     const epUrl = this.fullUrl(url);
     let res = null;
@@ -116,13 +153,53 @@ class DefaultExtension extends MProvider {
     let description = "";
     const meta = /<meta[^>]*name="description"[^>]*content="([^"]*)"/i.exec(html);
     if (meta) description = this.fixText(meta[1]);
+
+    const series = this.seriesName(name);
+    let episodes = [{ name: name || "第1集", url: epUrl }];
+    if (series) {
+      // 分類 id：優先「全集連結」/?cat=N，退路是 data-apireq 裡的 "c":"N"。
+      let catId = "";
+      const cl = /href="\/\?cat=(\d+)"/i.exec(html);
+      if (cl) catId = cl[1];
+      if (!catId) {
+        const aq = /data-apireq="([^"]+)"/i.exec(html);
+        if (aq) {
+          try {
+            const decoded = decodeURIComponent(aq[1].replace(/&amp;/g, "&"));
+            const cj = JSON.parse(decoded);
+            if (cj && cj.c) catId = String(cj.c);
+          } catch (_) {}
+        }
+      }
+      const merged = {};
+      const addAll = (list) => {
+        for (let i = 0; i < list.length; i++) merged[list[i].url] = list[i];
+      };
+      // 1) 分類頁（最新 8 集）
+      if (catId) {
+        try {
+          const cr = await new Client().get(A1_BASE + "/?cat=" + catId, this.headers());
+          addAll(this.collectSeriesEpisodes(cr ? (cr.body || "") : "", series));
+        } catch (e) {}
+      }
+      // 2) 站內搜索（最新 8 條，同名）
+      try {
+        const sr = await new Client().get(A1_BASE + "/?s=" + encodeURIComponent(series), this.headers());
+        addAll(this.collectSeriesEpisodes(sr ? (sr.body || "") : "", series));
+      } catch (e) {}
+      const list = Object.keys(merged).map((k) => merged[k]);
+      list.sort((a, b) => a.num - b.num);
+      if (list.length > 0) {
+        episodes = list.map((e) => ({ name: e.name, url: e.url }));
+      }
+    }
     return {
-      name: name || "Anime1.me",
+      name: series || name || "Anime1.me",
       imageUrl: imageUrl,
       description: description,
       genre: [],
       status: 3,
-      episodes: [{ name: name || "第1集", url: epUrl }]
+      episodes: episodes
     };
   }
 
