@@ -1,5 +1,6 @@
 // Xfani 中继 Worker（Cloudflare Workers 免费版即可）
-// v1.2 并行版：三域名并行试，取首个成功返回
+// v1.3 并行 + 缓存版：三域名并行试，取首个成功返回；成功结果缓存 1 小时，
+// 同一集重复请求直接回缓存（手机上不再等接口，秒回）。
 // 作用：手机直连 Supabase 取视频接口被挡，改走这个中继。
 // 中继在 Cloudflare 边缘跑，能正常调通 Supabase 的三个域名，
 // 把结果原样返回给手机。手机只要能打开 workers.dev 就行。
@@ -37,6 +38,17 @@ export default {
       });
     }
 
+    // 先查缓存：同一集 + 同一线路，成功结果缓存 1 小时。
+    const cache = caches.default;
+    const cacheKey = new Request(
+      'https://xfani-relay-cache/episode/' + episodeId + '/' + (sourceId || 'all'),
+      { method: 'GET' }
+    );
+    try {
+      const hit = await cache.match(cacheKey);
+      if (hit) return hit;
+    } catch (e) { /* 缓存不可用就继续走接口 */ }
+
     const key = 'sb_publishable_OBIVAWACIX6lPXrO98_z24_HcsmalkA';
     const hosts = [
       'https://rzmsnqblptbceicadbyd.galentwww.cn',
@@ -46,8 +58,7 @@ export default {
     const payload = { action: 'fallback', episode_id: episodeId };
     if (sourceId) payload.source_id = sourceId;
 
-    // 三个域名并行试，哪个先返回就用哪个（之前是逐个串行试，
-    // 手机上容易超时）。任一成功即返回。
+    // 三个域名并行试，哪个先返回就用哪个。任一成功即返回。
     const attempts = hosts.map(async (host) => {
       const res = await fetch(host + '/functions/v1/issue-web-playback', {
         method: 'POST',
@@ -63,9 +74,19 @@ export default {
     });
     try {
       const data = await Promise.any(attempts);
-      return new Response(JSON.stringify(data), {
-        headers: { 'Content-Type': 'application/json' },
+      const resp = new Response(JSON.stringify(data), {
+        headers: {
+          'Content-Type': 'application/json',
+          'Cache-Control': 'max-age=3600',
+        },
       });
+      // 只缓存成功结果（ok:true 且有地址），失败不缓存。
+      try {
+        if (data && data.ok && (data.url || (data.candidates && data.candidates.length))) {
+          await cache.put(cacheKey, resp.clone());
+        }
+      } catch (e) { /* 缓存失败不影响返回 */ }
+      return resp;
     } catch (e) {
       // 三个都失败了
     }
