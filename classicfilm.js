@@ -7,7 +7,7 @@ const mangayomiSources = [{
 "typeSource": "single",
 "itemType": 1,
 "isNsfw": false,
-"version": "0.0.7",
+"version": "0.0.8",
 "dateFormat": "",
 "dateFormatLocale": "",
 "pkgPath": "classicfilm.js"
@@ -54,15 +54,22 @@ const IA_SEARCH = "https://archive.org/advancedsearch.php";
 const IA_META = "https://archive.org/metadata/";
 const IA_MIN_MP4_BYTES = 100 * 1024 * 1024;
 const IA_MAX_MP4_BYTES = 3 * 1024 * 1024 * 1024;
+// IA 排除：CD-ROM/光盘镜像/排行榜这类错标的条目。
+// v0.0.8：Psycho CD ROM（identifier PsychoCDROM，里面是 Vocaloid 排行榜视频，
+// 根本不是电影）曾被 isRelevant 放行（标题含 Psycho、year 为空），挑了个 90MB+
+// 的 mp4 当正片。标题/identifier 含这些词直接拒。
+const IA_EXCLUDE = ["cd-rom", "cdrom", "cd rom", "disc image", "iso image", "vocaloid", "ranking"];
 // 经典片截止年份：1979 年底之前上映的才算“经典”。
 const CLASSIC_MAX_YEAR = 1979;
 // 全片判定：B站视频片长至少 60 分钟才可能是正片（预告/解说/剪辑都短得多）。
 const FULL_FILM_MIN_SECONDS = 3600;
-// v0.0.5：片长容差收紧。旧的 max(30分钟, 25%) 会把 147 分钟有声书当成 175 分钟
-// 的教父。新的 max(15分钟, 15%) 仍能容纳不同剪辑版（黄金三镖客 161 vs 178 分钟
-// 差 17 分钟；七武士 203 vs 207 分钟差 4 分钟），但挡住了有声书/合集/游戏流程。
-const DUR_TOL_MIN = 15;
-const DUR_TOL_RATIO = 0.15;
+// v0.0.8：片长容差再收紧。v0.0.7 复现：惊魂记仍会挑中 94 分钟国产剧 BV1kCVU65EpH
+// （标题就是“惊魂记”，94 分钟和 Psycho 的 109 分钟差 15 分钟，刚好卡在旧容差
+// max(15分钟,15%)=16.35 分钟内）。新的 max(10分钟, 10%) 仍容纳不同剪辑版
+// （黄金三镖客 161 vs 178 分钟差 17 分钟，容差 max(10,17.8)=17.8 分钟仍过），
+// 但挡住了 15 分钟差的撞片国产剧。
+const DUR_TOL_MIN = 10;
+const DUR_TOL_RATIO = 0.10;
 // 最多列几集（候选片源）。
 const MAX_EPISODES = 4;
 // 排除词：这些标题即使片长够也不是正片本身（有声书/舞台/游戏/原声/外语配音/上色版等）。
@@ -511,6 +518,9 @@ for (const doc of docs) {
 const id = String(doc.identifier || "").trim();
 const t = String(doc.title || "").trim();
 if (!id ||!t) continue;
+const tl = t.toLowerCase();
+const il = id.toLowerCase();
+if (IA_EXCLUDE.some(w => tl.includes(w) || il.includes(w))) continue;
 if (!this.isRelevant(t, nameStrs)) continue;
 const y = parseInt(doc.year || "0", 10) || 0;
 if (year && y && y!== year) continue;
