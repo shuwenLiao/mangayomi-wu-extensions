@@ -7,20 +7,36 @@ const mangayomiSources = [{
 "typeSource": "single",
 "itemType": 1,
 "isNsfw": false,
-"version": "0.0.4",
+"version": "0.0.5",
 "dateFormat": "",
 "dateFormatLocale": "",
 "pkgPath": "classicfilm.js"
 }];
 
-// 经典电影 v0.0.1（吴 2026-11-16 要求：经典外国电影，黑白片为主；要有榜单、评分、简介、主演单、能播）。
+// 经典电影 v0.0.5（修片源错配/模糊/水印问题，Wu 2026-11-23 反馈：
+// “很多片源都是错的，而且是B站里比较模糊的，还有水印的”）。
+// 实测根因（probe_classicfilm_bili.js + probe2_classicfilm.js，2026-11-23 真实 B站搜索）：
+// 1. 教父：B站根本没有干净全片，旧算法用宽容差（±30分钟/25%）把 147 分钟的
+// “英文有声书逐句朗读”当成了正片。2. 惊魂记：旧算法挑了舞台版和
+// Hindi 配音版。3. 十二怒汉：旧算法挑了配音+上色版，正确的自制中字版明明是
+// 第二候选。4. 飞越疯人院：片长吻合的只有普通话配音版。5. 七武士/切腹/
+// 黄金三镖客/教父2/天国与地狱：旧挑法本身是对的，问题是没得选。
+// 修复：
+// a. 排除词大扩充（有声书/朗读/舞台/话剧/游戏/钢琴/原声/Hindi/粤语/上色等硬拒）；
+// b. 片长容差收紧到 max(15分钟, 15%)；
+// c. getDetail 一次搜出最多 4 个候选，以“集”的形式列出来（每集就是一条真实片源，
+// 名字里带标题，播错了/模糊/有水印就换下一集），不再由扩展暗中只挑一条；
+// d. 排序：蓝光/4K/1080p/修复/未删减/中英双字优先，普通话配音/上色版排最后；
+// e. WebView 提直链时顺带回传 dash 最高分辨率，画质标签写真实分辨率。
+// 水印：代码无法可靠识别水印，只能靠“优先干净片源标题 + 多集可换”来缓解，
+// 标题带 蓝光/4K/1080p/修复 的通常是干净压制。
 // 榜单/评分/简介/主演：TMDB API v3（api.themoviedb.org）。TMDB 是唯一同时满足
 // “服务器能连上 + 有评分 + 有简介 + 有主演 + 有真实榜单”的源。
 // 其它源实测都不行：豆瓣详情页 302 到 sec.douban.com（反爬）、搜索页无结构化结果；
 // DopeBox/SFlix 服务器连不上（HTTP 000）；NetMirror 域名已挂牌出售；UHD Movies 连不上；
 // Letterboxd 静态 HTML 里没有评分；vidsrc.sh 播放器是 webpack 打包的加密 JS，无直链。
-// 播放：B站搜全片（片长 ≥60 分钟 + 标题相关），直链提取复用 seasonal.js 0.0.5
-// 手机已验证的路子（WebView [script] 数组 + __playinfo__，再不行走 view→cid→playurl）。
+// 播放：B站搜全片，直链提取复用 seasonal.js 0.0.5 手机已验证的路子
+// （WebView [script] 数组 + __playinfo__，再不行走 view→cid→playurl）。
 // TMDB 需要免费 Key：用户在 themoviedb.org 免费注册 → 设置 → API → 申请 v3 Key，
 // 粘贴到本源设置里的“TMDB API Key”。没有 Key 之前榜单/搜索用不了，
 // getPopular 只返回一条说明项，点进去有申请步骤。
@@ -34,8 +50,21 @@ const BILI_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (K
 const CLASSIC_MAX_YEAR = 1979;
 // 全片判定：B站视频片长至少 60 分钟才可能是正片（预告/解说/剪辑都短得多）。
 const FULL_FILM_MIN_SECONDS = 3600;
-// 排除词：这些标题即使片长够也不是正片本身（同步评论、解说、影评、预告、混剪）。
-const BILI_EXCLUDE = ["同步评论", "反应", "解说", "盘点", "预告", "剪辑", "混剪", "影评", "解析", "吐槽", "花絮", "幕后", "纪录片", "reaction", "react", "trailer", "review", "特别收录", "一起看", "放映室", "授权章节", "网盘", "夸克", "quark", "pan.", "微信", "加微", "云盘", "百度云", "阿里云", "资源分享", "免费观看", "简史", "合集全集", "完整版合集", "中文配音", "国语配音", "国语版", "中配", "配音版", "中文版", "国语", "普通话配音", "中文对白", "国语对白", "国语发音"];
+// v0.0.5：片长容差收紧。旧的 max(30分钟, 25%) 会把 147 分钟有声书当成 175 分钟
+// 的教父。新的 max(15分钟, 15%) 仍能容纳不同剪辑版（黄金三镖客 161 vs 178 分钟
+// 差 17 分钟；七武士 203 vs 207 分钟差 4 分钟），但挡住了有声书/合集/游戏流程。
+const DUR_TOL_MIN = 15;
+const DUR_TOL_RATIO = 0.15;
+// 最多列几集（候选片源）。
+const MAX_EPISODES = 4;
+// 排除词：这些标题即使片长够也不是正片本身（有声书/舞台/游戏/原声/外语配音/上色版等）。
+const BILI_EXCLUDE = ["同步评论", "反应", "解说", "盘点", "预告", "剪辑", "混剪", "影评", "解析", "吐槽", "花絮", "幕后", "纪录片", "reaction", "react", "trailer", "review", "特别收录", "一起看", "放映室", "授权章节", "网盘", "夸克", "quark", "pan.", "微信", "加微", "云盘", "百度云", "阿里云", "资源分享", "免费观看", "简史", "合集全集", "完整版合集", "中文配音", "国语配音", "国语版", "中配", "配音版", "中文版", "国语", "普通话配音", "中文对白", "国语对白", "国语发音",
+"有声书", "有声小说", "朗读", "逐句", "舞台", "话剧", "戏剧", "徽剧", "京剧", "歌剧", "音乐剧", "游戏", "walkthrough", "gameplay", "longplay", "流程", "钢琴", "原声", "ost", "原声带", "hindi", "印地语", "粤语", "泰语", "越南语", "上色", "上色版", "特别收录内容", "蓝光花絮"];
+// 降级词：不是错片，但是 Wu 不想要的版本（普通话配音、上色版/彩色版）。不硬拒，
+// 只排到最后——如果只有这个版本，至少还能看，名字里会写清楚。
+const BILI_DEMOTE = ["普通话", "配音", "国语", "粤语", "彩色版", "彩色", "上色"];
+// 加分词：干净高清压制的标志，排前面。
+const BILI_HD = ["4k", "2160", "蓝光", "1080p", "1080P", "2k", "修复", "未删减", "中英双字", "中字", "完整版", "高清", "超清", "BD"];
 
 class DefaultExtension extends MProvider {
 headers() {
@@ -248,7 +277,25 @@ if (director) lines.push("导演：" + director);
 if (castLines.length) lines.push("主演：\n" + castLines.join("\n"));
 const overview = String(d.overview || "").trim();
 lines.push("简介：" + (overview || "（TMDB 暂无中文简介，可在源设置里把语言改成英文再看）"));
-lines.push("正片在 B站上：选集里只有“正片（B站）”这一集，点开直接播；播不了就是 B站这次没给直链，退出来就行，不要一直等转圈。");
+// v0.0.5：B站片源改成多集。getDetail 里直接搜 B站，候选按“干净高清优先、
+// 配音/上色版排最后”排序，最多 4 集；每集名字里带原标题，播错/模糊/有水印就换下一集。
+let episodes = [];
+let biliNote = "";
+try {
+const films = await this.findBiliFilms(title, orig, runtime);
+episodes = films.map((f, i) => ({
+name: "正片" + (i + 1) + " · " + this.shortTitle(f.title) + " · " + Math.floor(f.dur / 60) + "分钟",
+url: "bili:" + f.bvid
+}));
+if (episodes.length) {
+biliNote = "B站片源 " + episodes.length + " 条（已按蓝光/高清优先排好，配音版排最后）：第 1 条最推荐；播出来不对、模糊或有水印就退出来换下一条。";
+} else {
+biliNote = "B站上这次没找到合适的正片（搜到的都是有声书/解说/舞台版/配音版等，已过滤掉，宁缺毋滥）。过段时间再来看看，或在 B站上手动搜一下。";
+}
+} catch (_) {
+biliNote = "这次没搜到 B站片源（网络问题），下拉刷新再进一次。";
+}
+lines.push(biliNote);
 const name = orig && orig!== title? (title + "（" + orig + "）"): title;
 return {
 name: name,
@@ -257,10 +304,10 @@ imageUrl: this.posterUrl(d.poster_path),
 description: lines.join("\n"),
 genre: genres,
 status: 3,
-episodes: [{ name: "正片（B站）", url: "bili:" + id + ":" + encodeURIComponent(title) + ":" + encodeURIComponent(orig) + ":" + runtime}]
+episodes: episodes
 };
 }
-// ---- B站全片播放 ----
+// ---- B站全片播放（v0.0.5 多候选） ----
 // “分:秒”或“时:分:秒”转秒数。
 parseDuration(s) {
 const parts = String(s || "").split(":").map(x => parseInt(x, 10));
@@ -301,12 +348,38 @@ if (t.indexOf(w.toLowerCase())!== -1) return true;
 }
 return false;
 }
-// B站搜全片：返回最像正片的那条（片长 ≥60 分钟、标题相关、片长最接近 TMDB 片长）。
-async findBiliFilm(titleZh, titleEn, runtimeMin) {
+// 降级版本（配音/上色版）：不硬拒，但排最后。
+isDemoted(title) {
+const t = String(title || "").toLowerCase();
+for (const w of BILI_DEMOTE) {
+if (t.indexOf(w.toLowerCase())!== -1) return true;
+}
+return false;
+}
+// 高清标志个数（蓝光/4K/1080p/修复/未删减/中英双字等），越多越优先。
+hdScore(title) {
+const t = String(title || "").toLowerCase();
+let s = 0;
+for (const w of BILI_HD) {
+if (t.indexOf(w.toLowerCase())!== -1) s++;
+}
+return s;
+}
+// 集名用的短标题：去掉多余空格/换行，截到 30 字。
+shortTitle(title) {
+let t = String(title || "").replace(/\s+/g, " ").trim();
+if (t.length > 30) t = t.slice(0, 30) + "…";
+return t || "正片";
+}
+// B站搜全片：返回最多 MAX_EPISODES 个候选（已排序：干净高清优先、配音/上色版最后、
+// 同档按片长与 TMDB 的差距从小到大；同一 bvid 只留一次）。
+async findBiliFilms(titleZh, titleEn, runtimeMin) {
 const nameStrs = [titleZh, titleEn].filter(Boolean);
 const queries = [];
 if (titleZh) queries.push(titleZh + " 电影");
 if (titleEn && titleEn!== titleZh) queries.push(titleEn + " movie");
+const seen = {};
+const cands = [];
 for (const q of queries) {
 let data = null;
 try {
@@ -315,12 +388,13 @@ const d = JSON.parse(res.body || "");
 data = d && d.data? d.data: null;
 } catch (_) { data = null;}
 if (!data ||!data.result) continue;
-const cands = [];
 for (const r of data.result) {
 if (!r || r.result_type!== "video" ||!r.data) continue;
 for (const v of r.data) {
 const title = this.stripEm(v.title);
 if (!title ||!v.bvid) continue;
+if (seen[v.bvid]) continue;
+seen[v.bvid] = true;
 if (this.isExcluded(title)) continue;
 if (!this.isRelevant(title, nameStrs)) continue;
 const dur = this.parseDuration(v.duration);
@@ -328,28 +402,37 @@ if (dur < FULL_FILM_MIN_SECONDS) continue;
 let diff = 99999;
 if (runtimeMin && runtimeMin > 0) {
 diff = Math.abs(dur - runtimeMin * 60);
-// v0.0.2：片长与 TMDB 相差超过 max(30分钟, 25%) 的不是正片（合集/浓缩版/引流视频），直接不要
-const tol = Math.max(1800, Math.floor(runtimeMin * 60 * 0.25));
+// v0.0.5：容差 max(15分钟, 15%)。旧的 max(30分钟, 25%) 会把 147 分钟有声书
+// 当成 175 分钟的教父；新的仍容纳不同剪辑版（黄金三镖客 161 vs 178 分钟）。
+const tol = Math.max(DUR_TOL_MIN * 60, Math.floor(runtimeMin * 60 * DUR_TOL_RATIO));
 if (diff > tol) continue;
 }
-cands.push({ title: title, bvid: v.bvid, dur: dur, diff: diff, author: String(v.author || "")});
+cands.push({ title: title, bvid: v.bvid, dur: dur, diff: diff,
+demoted: this.isDemoted(title), hd: this.hdScore(title), author: String(v.author || "")});
 }
 }
-if (cands.length) {
-cands.sort((a, b) => (a.diff - b.diff) || (b.dur - a.dur));
-return cands[0];
 }
+cands.sort((a, b) => {
+if (a.demoted!== b.demoted) return a.demoted? 1: -1;
+if (a.hd!== b.hd) return b.hd - a.hd;
+return (a.diff - b.diff) || (b.dur - a.dur);
+});
+return cands.slice(0, MAX_EPISODES);
 }
-return null;
+// 旧版单挑（留作兼容：老版集地址 bili:<id>:<标题>:<原名>:<片长> 还会走这条）。
+async findBiliFilm(titleZh, titleEn, runtimeMin) {
+const list = await this.findBiliFilms(titleZh, titleEn, runtimeMin);
+return list.length? list[0]: null;
 }
 // WebView 提 B站直链（和 seasonal.js 0.0.5 同一写法，手机已验证能播）。
+// v0.0.5：顺带回传 dash 最高分辨率（maxHeight），画质标签写真实分辨率。
 async extractBiliDirect(pageUrl) {
 if (typeof evaluateJavascriptViaWebview!== "function") return null;
-const script = "(function(){var tries=0;var timer=setInterval(function(){tries++;var direct=null;try{var pi=window.__playinfo__;if(pi&&pi.data){var durl=pi.data.durl;if(durl&&durl.length&&durl[0].url){direct=durl[0].url;}else if(pi.data.dash&&pi.data.dash.video&&pi.data.dash.video.length){var vs=pi.data.dash.video.slice().sort(function(a,b){return (b.bandwidth||0)-(a.bandwidth||0);});direct=vs[0].baseUrl||vs[0].base_url||null;}}}catch(e){}if(direct||tries>24){clearInterval(timer);window.flutter_inappwebview.callHandler(\"setResponse\",JSON.stringify({direct:direct}));}},500);})()";
+const script = "(function(){var tries=0;var timer=setInterval(function(){tries++;var direct=null;var maxH=0;try{var pi=window.__playinfo__;if(pi&&pi.data){var durl=pi.data.durl;if(durl&&durl.length&&durl[0].url){direct=durl[0].url;}if(pi.data.dash&&pi.data.dash.video&&pi.data.dash.video.length){var vs=pi.data.dash.video.slice().sort(function(a,b){return (b.bandwidth||0)-(a.bandwidth||0);});if(!direct){direct=vs[0].baseUrl||vs[0].base_url||null;}for(var i=0;i<vs.length;i++){var h=vs[i].height||0;if(h>maxH)maxH=h;}}}}catch(e){}if(direct||tries>24){clearInterval(timer);window.flutter_inappwebview.callHandler(\"setResponse\",JSON.stringify({direct:direct,maxHeight:maxH}));}},500);})()";
 try {
 const raw = await evaluateJavascriptViaWebview(pageUrl, this.biliHeaders(), [script], 20);
 const d = JSON.parse(raw || "{}");
-if (d && d.direct) return String(d.direct);
+if (d && d.direct) return { url: String(d.direct), height: parseInt(d.maxHeight || 0, 10) || 0};
 } catch (_) {}
 return null;
 }
@@ -364,28 +447,39 @@ const cid = vd && vd.data? vd.data.cid: null;
 if (!cid) return null;
 const res = await new Client().get("https://api.bilibili.com/x/player/playurl?bvid=" + m[0] + "&cid=" + cid + "&qn=80&fnval=0&fnver=0&fourk=1", this.biliHeaders());
 const d = JSON.parse(res.body || "");
-if (d && d.data && d.data.durl && d.data.durl.length && d.data.durl[0].url) return String(d.data.durl[0].url);
+if (d && d.data && d.data.durl && d.data.durl.length && d.data.durl[0].url) return { url: String(d.data.durl[0].url), height: 0};
 } catch (_) {}
 return null;
 }
 async getVideoList(url) {
-const m = String(url || "").match(/^bili:(\d+):([^:]*):([^:]*):(\d*)$/);
+const u = String(url || "");
+// 新版集地址：bili:<bvid>，直接提这条的直链。
+let m = u.match(/^bili:(BV[0-9A-Za-z]+)$/);
+if (m) {
+const pageUrl = "https://www.bilibili.com/video/" + m[1] + "/";
+const headers = this.biliHeaders();
+let got = await this.extractBiliDirect(pageUrl);
+if (!got) got = await this.extractBiliDirectViaApi(pageUrl);
+if (!got ||!got.url) return [];
+const quality = got.height? ("B站直链 · " + got.height + "p"): "B站直链";
+return [{ url: got.url, originalUrl: pageUrl, quality: quality, headers: headers}];
+}
+// 老版集地址：bili:<tmdbId>:<标题>:<原名>:<片长>，走旧的搜索挑第一条。
+m = u.match(/^bili:(\d+):([^:]*):([^:]*):(\d*)$/);
 if (!m) return [];
-// v0.0.4：片名里有 ":"（如 2001: A Space Odyssey）时旧的 [^:]* 正则直接匹配失败、
-// getVideoList 返回 [] 导致播不了；getDetail 里已改用 encodeURIComponent 拼地址
-// （":" 编成 %3A 后不再破坏分隔），这里再解回来。
 let titleZh = "", titleEn = "";
-try { titleZh = decodeURIComponent(m[2] || ""); } catch (_) { titleZh = m[2] || ""; }
-try { titleEn = decodeURIComponent(m[3] || ""); } catch (_) { titleEn = m[3] || ""; }
+try { titleZh = decodeURIComponent(m[2] || "");} catch (_) { titleZh = m[2] || "";}
+try { titleEn = decodeURIComponent(m[3] || "");} catch (_) { titleEn = m[3] || "";}
 const runtimeMin = parseInt(m[4] || "0", 10) || 0;
 const film = await this.findBiliFilm(titleZh, titleEn, runtimeMin);
 if (!film) return [];
 const pageUrl = "https://www.bilibili.com/video/" + film.bvid + "/";
 const headers = this.biliHeaders();
-let direct = await this.extractBiliDirect(pageUrl);
-if (!direct) direct = await this.extractBiliDirectViaApi(pageUrl);
-if (!direct) return [];
-return [{ url: direct, originalUrl: pageUrl, quality: "B站直链", headers: headers}];
+let got = await this.extractBiliDirect(pageUrl);
+if (!got) got = await this.extractBiliDirectViaApi(pageUrl);
+if (!got ||!got.url) return [];
+const quality = got.height? ("B站直链 · " + got.height + "p"): "B站直链";
+return [{ url: got.url, originalUrl: pageUrl, quality: quality, headers: headers}];
 }
 getFilterList() {
 return [{
