@@ -7,7 +7,7 @@ const mangayomiSources = [{
 "typeSource": "single",
 "itemType": 1,
 "isNsfw": false,
-"version": "0.0.8",
+"version": "0.0.9",
 "dateFormat": "",
 "dateFormatLocale": "",
 "pkgPath": "classicfilm.js"
@@ -58,7 +58,15 @@ const IA_MAX_MP4_BYTES = 3 * 1024 * 1024 * 1024;
 // v0.0.8：Psycho CD ROM（identifier PsychoCDROM，里面是 Vocaloid 排行榜视频，
 // 根本不是电影）曾被 isRelevant 放行（标题含 Psycho、year 为空），挑了个 90MB+
 // 的 mp4 当正片。标题/identifier 含这些词直接拒。
-const IA_EXCLUDE = ["cd-rom", "cdrom", "cd rom", "disc image", "iso image", "vocaloid", "ranking"];
+// v0.0.9：再加三类——预告片、上色版、同人剪辑版。
+// 惊魂记复现：加 year:1960 后搜出 3 条假货——psychose-colorized 是法语上色版
+// （659MB，109 分钟，VF Colorisée）；psycho-hd-1080p 标题就是 Trailer，
+// mp4 虽 1186MB 但 ffprobe 只有 389 秒=6.5 分钟，是预告；
+// psycho-the-roger-ebert-cut-v-2 是 Roger Ebert 的同人重剪版（.ia.mp4 614MB）。
+// 三者都不是原版正片，标题含这些词直接拒。
+const IA_EXCLUDE = ["cd-rom", "cdrom", "cd rom", "disc image", "iso image", "vocaloid", "ranking",
+"trailer", "预告", "colorized", "colorisée", "colorise", "colorised", "上色", "彩色",
+"ebert cut", "fan edit", "fanedit", "recut", "re-cut"];
 // 经典片截止年份：1979 年底之前上映的才算“经典”。
 const CLASSIC_MAX_YEAR = 1979;
 // 全片判定：B站视频片长至少 60 分钟才可能是正片（预告/解说/剪辑都短得多）。
@@ -506,7 +514,12 @@ const qTitle = titleEn || titleZh;
 if (!qTitle) return [];
 let docs = [];
 try {
-const q = "title:(" + qTitle + ") AND mediatype:movies";
+// v0.0.9：搜索词加年份（和 B站搜索保持一致）。不加年份时教父的前 10 条全是
+// 游戏/采访等垃圾，AI 修复版那条进不了前 10；加 year:1972 后只剩 2 条，AI 修复
+// 版就是其中之一。年份是 IA 的字段过滤，比 B站的模糊关键词可靠得多。
+const q = year
+? "title:(" + qTitle + ") AND year:" + year + " AND mediatype:movies"
+: "title:(" + qTitle + ") AND mediatype:movies";
 const url = IA_SEARCH + "?q=" + encodeURIComponent(q) + "&fl[]=identifier&fl[]=title&fl[]=year&rows=10&output=json";
 const res = await new Client().get(url, this.headers());
 const d = JSON.parse(res.body || "");
@@ -555,8 +568,14 @@ out.push(r);
 }
 return out;
 }
+// v0.0.9：按路径段编码。教父 AI 修复版的 mp4 在子目录里，文件名含“/”
+// （The-Godfather-I_..._BL/The-Godfather-I_..._BLUDUAINE/....mp4）；
+// 旧写法对整个文件名 encodeURIComponent 会把“/”编成 %2F，链接就坏了。
+// 现在按“/”切开、每段单独编码、再拼回去。十二怒汉的 530MB 2160p mp4 也在
+// 子目录里，修了编码后同样可用。
 iaDirectUrl(identifier, filename) {
-return "https://archive.org/download/" + identifier + "/" + encodeURIComponent(filename);
+const enc = String(filename || "").split("/").map(s => encodeURIComponent(s)).join("/");
+return "https://archive.org/download/" + identifier + "/" + enc;
 }
 // WebView 提 B站直链（和 seasonal.js 0.0.5 同一写法，手机已验证能播）。
 // v0.0.5：顺带回传 dash 最高分辨率（maxHeight），画质标签写真实分辨率。
