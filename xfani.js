@@ -7,7 +7,7 @@ const mangayomiSources = [{
   "typeSource": "single",
   "itemType": 1,
   "isNsfw": false,
-  "version": "0.0.8",
+  "version": "0.0.9",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "xfani.js"
@@ -269,8 +269,10 @@ class DefaultExtension extends MProvider {
   }
 
   // 取视频用的 host 顺序：有中继时中继放第一，再是直连三域名。
+  // 中继地址写死为默认（设置里填了就用设置的，没填也走默认中继，
+  // 不再依赖偏好读取，避免设置没读到的情况）。
   playbackHosts() {
-    const relay = this.getRelayUrl();
+    const relay = this.getRelayUrl() || "https://xfani-relay.1403891385.workers.dev";
     if (relay) return [relay].concat(XF_API_HOSTS);
     return XF_API_HOSTS;
   }
