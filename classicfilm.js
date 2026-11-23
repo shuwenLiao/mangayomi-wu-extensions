@@ -7,7 +7,7 @@ const mangayomiSources = [{
 "typeSource": "single",
 "itemType": 1,
 "isNsfw": false,
-"version": "0.0.6",
+"version": "0.0.7",
 "dateFormat": "",
 "dateFormatLocale": "",
 "pkgPath": "classicfilm.js"
@@ -25,8 +25,11 @@ const mangayomiSources = [{
 //    页面标题是“视频去哪了呢”，一并拒掉。抓不到/解析不到的放行（fail open）。
 // 3. 撞片：惊魂记 94 分钟国产剧撞了 Psycho 的中文名（109-94=15 分钟刚好在容差内）。
 //    搜索词里加年份（“惊魂记 1960 电影”）来消歧。
-// 另外：Wu 问“没有其他播放源了吗”，已派人去调研 YouTube / Dailymotion / 西瓜 /
-// Internet Archive / OK.ru 等站的直链可行性，结论出来再决定接不接。
+// 另外：Wu 问“没有其他播放源了吗”，已调研 YouTube / Dailymotion / 西瓜 /
+// Internet Archive / OK.ru 等站。结论（2026-11-23，真实接口验证）：IA 是最值得接的
+// 备用源——十二怒汉和七武士有实测可播的干净 mp4 直链（无水印，片长和 TMDB 完全吻合）。
+// YouTube 有片但拿不到原生直链（只有 DASH 分离流）；Dailymotion 只有预告；西瓜无全片；
+// OK.ru/VK 需登录。v0.0.7 把 IA 接进来（B站和 IA 并行搜，IA 干净直链排前面）。
 // 水印：代码无法可靠识别水印，只能靠“优先干净片源标题 + 多集可换”来缓解。
 // 榜单/评分/简介/主演：TMDB API v3（api.themoviedb.org）。TMDB 是唯一同时满足
 // “服务器能连上 + 有评分 + 有简介 + 有主演 + 有真实榜单”的源。
@@ -44,6 +47,13 @@ const TMDB_IMG = "https://image.tmdb.org/t/p/w500";
 const TMDB_ICON = "https://www.themoviedb.org/favicon.ico";
 const BILI_API_SEARCH = "https://api.bilibili.com/x/web-interface/search/all/v2?keyword=";
 const BILI_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
+// Internet Archive（v0.0.7 备用源）：advancedsearch 搜 title + mediatype:movies，
+// metadata 取 mp4 文件名，直链 https://archive.org/download/<identifier>/<文件名>。
+// mp4 大小过滤：100MB~3GB 才可能是全片（太小是片段/预告，太大是 mkv/合集）。
+const IA_SEARCH = "https://archive.org/advancedsearch.php";
+const IA_META = "https://archive.org/metadata/";
+const IA_MIN_MP4_BYTES = 100 * 1024 * 1024;
+const IA_MAX_MP4_BYTES = 3 * 1024 * 1024 * 1024;
 // 经典片截止年份：1979 年底之前上映的才算“经典”。
 const CLASSIC_MAX_YEAR = 1979;
 // 全片判定：B站视频片长至少 60 分钟才可能是正片（预告/解说/剪辑都短得多）。
@@ -275,23 +285,33 @@ if (director) lines.push("导演：" + director);
 if (castLines.length) lines.push("主演：\n" + castLines.join("\n"));
 const overview = String(d.overview || "").trim();
 lines.push("简介：" + (overview || "（TMDB 暂无中文简介，可在源设置里把语言改成英文再看）"));
-// v0.0.5：B站片源改成多集。getDetail 里直接搜 B站，候选按“干净高清优先、
-// 配音/上色版排最后”排序，最多 4 集；每集名字里带原标题，播错/模糊/有水印就换下一集。
+// v0.0.7：B站片源 + Internet Archive 备用源。B站和 IA 并行搜，IA 的干净 mp4 直链
+// 排前面（无水印、片长已验吻合），B站补后面，最多 4 集；两边都没有才显示“没找到”。
 let episodes = [];
 let biliNote = "";
 try {
-const films = await this.findBiliFilms(title, orig, runtime, year);
-episodes = films.map((f, i) => ({
-name: "正片" + (i + 1) + " · " + this.shortTitle(f.title) + " · " + Math.floor(f.dur / 60) + "分钟",
-url: "bili:" + f.bvid
-}));
+const results = await Promise.all([
+this.findBiliFilms(title, orig, runtime, year).catch(() => []),
+this.findIAFilms(title, orig, runtime, year).catch(() => [])
+]);
+const biliFilms = results[0] || [];
+const iaFilms = results[1] || [];
+const all = [];
+for (const f of iaFilms) {
+all.push({ kind: "ia", name: "正片" + (all.length + 1) + " · 档案馆 · " + this.shortTitle(f.title) + " · " + Math.round(f.size / 1048576) + "MB", url: "ia:" + f.identifier + ":" + encodeURIComponent(f.filename)});
+}
+for (const f of biliFilms) {
+all.push({ kind: "bili", name: "正片" + (all.length + 1) + " · " + this.shortTitle(f.title) + " · " + Math.floor(f.dur / 60) + "分钟", url: "bili:" + f.bvid});
+}
+episodes = all.slice(0, MAX_EPISODES).map(e => ({ name: e.name, url: e.url}));
 if (episodes.length) {
-biliNote = "B站片源 " + episodes.length + " 条（已按蓝光/高清优先排好，配音版排最后）：第 1 条最推荐；播出来不对、模糊或有水印就退出来换下一条。";
+const iaN = iaFilms.length? ("其中档案馆直链 " + Math.min(iaFilms.length, MAX_EPISODES) + " 条（干净、无水印）"): "";
+biliNote = "片源 " + episodes.length + " 条" + (iaN? ("，" + iaN): "") + "（已按干净优先排好）：第 1 条最推荐；播出来不对、模糊或有水印就退出来换下一条。";
 } else {
-biliNote = "B站上这次没找到合适的正片（搜到的都是有声书/解说/舞台版/配音版等，已过滤掉，宁缺毋滥）。过段时间再来看看，或在 B站上手动搜一下。";
+biliNote = "B站和档案馆这次都没找到合适的正片（搜到的都是有声书/解说/舞台版/配音版等，已过滤掉，宁缺毋滥）。过段时间再来看看，或在 B站上手动搜一下。";
 }
 } catch (_) {
-biliNote = "这次没搜到 B站片源（网络问题），下拉刷新再进一次。";
+biliNote = "这次没搜到片源（网络问题），下拉刷新再进一次。";
 }
 lines.push(biliNote);
 const name = orig && orig!== title? (title + "（" + orig + "）"): title;
@@ -469,6 +489,65 @@ async findBiliFilm(titleZh, titleEn, runtimeMin, year) {
 const list = await this.findBiliFilms(titleZh, titleEn, runtimeMin, year);
 return list.length? list[0]: null;
 }
+// ---- Internet Archive 备用源（v0.0.7） ----
+// advancedsearch 搜 title + mediatype:movies → 按标题+年份过滤 → 并行取 metadata，
+// 挑大小在 100MB~3GB 的 mp4（太小是片段/预告，太大是 mkv/合集），返回直链信息。
+// 实测：十二怒汉 12-angry-men-1957_202308（532MB，96.1分钟）、七武士
+// seven-samurai-1954-4k（1136MB，207.2分钟），片长和 TMDB 完全吻合，无水印。
+async findIAFilms(titleZh, titleEn, runtimeMin, year) {
+const qTitle = titleEn || titleZh;
+if (!qTitle) return [];
+let docs = [];
+try {
+const q = "title:(" + qTitle + ") AND mediatype:movies";
+const url = IA_SEARCH + "?q=" + encodeURIComponent(q) + "&fl[]=identifier&fl[]=title&fl[]=year&rows=10&output=json";
+const res = await new Client().get(url, this.headers());
+const d = JSON.parse(res.body || "");
+docs = (d && d.response && d.response.docs) || [];
+} catch (_) { return [];}
+const nameStrs = [titleZh, titleEn].filter(Boolean);
+const cands = [];
+for (const doc of docs) {
+const id = String(doc.identifier || "").trim();
+const t = String(doc.title || "").trim();
+if (!id ||!t) continue;
+if (!this.isRelevant(t, nameStrs)) continue;
+const y = parseInt(doc.year || "0", 10) || 0;
+if (year && y && y!== year) continue;
+cands.push({ identifier: id, title: t, year: y});
+}
+if (!cands.length) return [];
+const CHECK_N = 5;
+const list = cands.slice(0, CHECK_N);
+const results = await Promise.all(list.map(async (c) => {
+try {
+const res = await new Client().get(IA_META + c.identifier, this.headers());
+const d = JSON.parse(res.body || "");
+const files = (d && d.files) || [];
+let best = null;
+for (const f of files) {
+const name = String(f.name || "");
+if (!/\.mp4$/i.test(name)) continue;
+const size = parseInt(f.size || "0", 10) || 0;
+if (size < IA_MIN_MP4_BYTES || size > IA_MAX_MP4_BYTES) continue;
+if (!best || size > best.size) best = { name: name, size: size};
+}
+if (!best) return null;
+return { identifier: c.identifier, filename: best.name, size: best.size, title: c.title};
+} catch (_) { return null;}
+}));
+const seen = {};
+const out = [];
+for (const r of results) {
+if (!r || seen[r.identifier]) continue;
+seen[r.identifier] = true;
+out.push(r);
+}
+return out;
+}
+iaDirectUrl(identifier, filename) {
+return "https://archive.org/download/" + identifier + "/" + encodeURIComponent(filename);
+}
 // WebView 提 B站直链（和 seasonal.js 0.0.5 同一写法，手机已验证能播）。
 // v0.0.5：顺带回传 dash 最高分辨率（maxHeight），画质标签写真实分辨率。
 async extractBiliDirect(pageUrl) {
@@ -498,8 +577,17 @@ return null;
 }
 async getVideoList(url) {
 const u = String(url || "");
+// v0.0.7：档案馆直链 ia:<identifier>:<urlencoded filename>，直接返回 mp4 直链（原生可播，无需 WebView）。
+let m = u.match(/^ia:([^:]+):(.+)$/);
+if (m) {
+let filename = "";
+try { filename = decodeURIComponent(m[2] || "");} catch (_) { filename = m[2] || "";}
+if (!filename) return [];
+const direct = this.iaDirectUrl(m[1], filename);
+return [{ url: direct, originalUrl: direct, quality: "档案馆直链 · mp4", headers: this.headers()}];
+}
 // 新版集地址：bili:<bvid>，直接提这条的直链。
-let m = u.match(/^bili:(BV[0-9A-Za-z]+)$/);
+m = u.match(/^bili:(BV[0-9A-Za-z]+)$/);
 if (m) {
 const pageUrl = "https://www.bilibili.com/video/" + m[1] + "/";
 const headers = this.biliHeaders();
