@@ -7,29 +7,27 @@ const mangayomiSources = [{
 "typeSource": "single",
 "itemType": 1,
 "isNsfw": false,
-"version": "0.0.5",
+"version": "0.0.6",
 "dateFormat": "",
 "dateFormatLocale": "",
 "pkgPath": "classicfilm.js"
 }];
 
-// 经典电影 v0.0.5（修片源错配/模糊/水印问题，Wu 2026-11-23 反馈：
-// “很多片源都是错的，而且是B站里比较模糊的，还有水印的”）。
-// 实测根因（probe_classicfilm_bili.js + probe2_classicfilm.js，2026-11-23 真实 B站搜索）：
-// 1. 教父：B站根本没有干净全片，旧算法用宽容差（±30分钟/25%）把 147 分钟的
-// “英文有声书逐句朗读”当成了正片。2. 惊魂记：旧算法挑了舞台版和
-// Hindi 配音版。3. 十二怒汉：旧算法挑了配音+上色版，正确的自制中字版明明是
-// 第二候选。4. 飞越疯人院：片长吻合的只有普通话配音版。5. 七武士/切腹/
-// 黄金三镖客/教父2/天国与地狱：旧挑法本身是对的，问题是没得选。
-// 修复：
-// a. 排除词大扩充（有声书/朗读/舞台/话剧/游戏/钢琴/原声/Hindi/粤语/上色等硬拒）；
-// b. 片长容差收紧到 max(15分钟, 15%)；
-// c. getDetail 一次搜出最多 4 个候选，以“集”的形式列出来（每集就是一条真实片源，
-// 名字里带标题，播错了/模糊/有水印就换下一集），不再由扩展暗中只挑一条；
-// d. 排序：蓝光/4K/1080p/修复/未删减/中英双字优先，普通话配音/上色版排最后；
-// e. WebView 提直链时顺带回传 dash 最高分辨率，画质标签写真实分辨率。
-// 水印：代码无法可靠识别水印，只能靠“优先干净片源标题 + 多集可换”来缓解，
-// 标题带 蓝光/4K/1080p/修复 的通常是干净压制。
+// 经典电影 v0.0.6（修 0.0.5 上手机后仍全错：Wu 2026-11-23 12:18 五张截图）。
+// 截图实测：惊魂记正片1（94分钟）是国产现代剧不是 Psycho（标题撞片）；
+// 十二怒汉正片1“蓝光完整版”实际只有 2:44，是反应视频；正片3“自制中字”实际只有约 4 分钟；
+// 教父/教父2 都是 0 集。根因：
+// 1. 多分P：十二怒汉“蓝光完整版” BV1uTxq6WE2t 有 36 个分P，搜索片长 96 分钟是
+//    36 个分P的总和，第 1P 只有 2:44 的反应视频——扩展只播第 1P，所以全错。
+//    B站搜索接口不给分P数，但 video 页 HTML 里有 "videos":N（七武士单P是 1，
+//    十二怒汉是 36）。v0.0.6 并行抓 video 页，videos>2 的直接拒掉。
+// 2. 已删：十二怒汉两条自制中字（BV1KBQtBQEC9 / BV1ZQXrBVEKF）都已删，
+//    页面标题是“视频去哪了呢”，一并拒掉。抓不到/解析不到的放行（fail open）。
+// 3. 撞片：惊魂记 94 分钟国产剧撞了 Psycho 的中文名（109-94=15 分钟刚好在容差内）。
+//    搜索词里加年份（“惊魂记 1960 电影”）来消歧。
+// 另外：Wu 问“没有其他播放源了吗”，已派人去调研 YouTube / Dailymotion / 西瓜 /
+// Internet Archive / OK.ru 等站的直链可行性，结论出来再决定接不接。
+// 水印：代码无法可靠识别水印，只能靠“优先干净片源标题 + 多集可换”来缓解。
 // 榜单/评分/简介/主演：TMDB API v3（api.themoviedb.org）。TMDB 是唯一同时满足
 // “服务器能连上 + 有评分 + 有简介 + 有主演 + 有真实榜单”的源。
 // 其它源实测都不行：豆瓣详情页 302 到 sec.douban.com（反爬）、搜索页无结构化结果；
@@ -282,7 +280,7 @@ lines.push("简介：" + (overview || "（TMDB 暂无中文简介，可在源设
 let episodes = [];
 let biliNote = "";
 try {
-const films = await this.findBiliFilms(title, orig, runtime);
+const films = await this.findBiliFilms(title, orig, runtime, year);
 episodes = films.map((f, i) => ({
 name: "正片" + (i + 1) + " · " + this.shortTitle(f.title) + " · " + Math.floor(f.dur / 60) + "分钟",
 url: "bili:" + f.bvid
@@ -330,14 +328,36 @@ if (k > best) best = k;
 }
 return best;
 }
-// 标题是否和片名沾边：片名完整出现，或有 3 字以上公共片段。
+// 标题是否和片名沾边：片名要作为独立词出现，不能是更长词的一部分。
+// v0.0.6：之前用子串匹配，“小教父”会撞上“教父”（The Outsiders 当成 The Godfather）。
+// 现在要求片名前后都是分隔符（空格/标点/括号/开头结尾），前面是汉字、后面是汉字/
+// 字母/数字（教父2、前传）都不算。英文名同样处理（The Godfather Part II 不算 Part I）。
 isRelevant(title, nameStrs) {
 const t = String(title || "").toLowerCase();
+const isWordChar = (ch) => {
+if (!ch) return false;
+const c = ch.charCodeAt(0);
+if (c >= 0x4e00 && c <= 0x9fff) return true; // 汉字
+if ((c >= 0x30 && c <= 0x39) || (c >= 0x61 && c <= 0x7a) || (c >= 0x41 && c <= 0x5a)) return true; // 数字/字母
+return false;
+};
 for (const n of nameStrs) {
 const nn = String(n || "").trim().toLowerCase();
 if (!nn) continue;
-if (t.indexOf(nn)!== -1) return true;
-if (nn.length >= 3 && this.lcsLen(t, nn) >= 3) return true;
+let idx = t.indexOf(nn);
+while (idx!== -1) {
+const before = idx > 0? t[idx - 1]: "";
+const after = idx + nn.length < t.length? t[idx + nn.length]: "";
+if (!isWordChar(before) &&!isWordChar(after)) {
+// 再看后面是不是“续集/Part II”：The Godfather 后面跟 Part II 是另一部片，
+// 教父后面跟 2/前传同理（中文名后跟数字/汉字已被 isWordChar 挡住，这里补英文名的情况）。
+let j = idx + nn.length;
+while (j < t.length && /[\s（(【\[·.,:;—-]/.test(t[j])) j++;
+const rest = t.slice(j, j + 8);
+if (!/^(part|ii|iii|iv|v|2|3|4|5|续|前传|外传|episode|chapter)/.test(rest)) return true;
+}
+idx = t.indexOf(nn, idx + 1);
+}
 }
 return false;
 }
@@ -371,13 +391,36 @@ let t = String(title || "").replace(/\s+/g, " ").trim();
 if (t.length > 30) t = t.slice(0, 30) + "…";
 return t || "正片";
 }
+// v0.0.6：video 页核查。B站搜索接口不给分P数，但 video 页 HTML 里有 "videos":N。
+// 十二怒汉“蓝光完整版” BV1uTxq6WE2t 是 36 分P，搜索片长 96 分钟是 36 个分P的总和，
+// 第 1P 只有 2:44 的反应视频——扩展只播第 1P，所以用户看到的全是错的。
+// 另外自制中字那两条（BV1KBQtBQEC9 / BV1ZQXrBVEKF）已经删了，页面标题是“视频去哪了呢”。
+// 核查：取前 12 个候选并行抓 video 页，删掉的（标题含“视频去哪了呢”）和多分P的
+// （videos>2）直接拒掉；抓不到/解析不到的放行（fail open，不因为网络问题把好片源也杀了）。
+async checkBiliPages(cands) {
+const CHECK_N = 12;
+const list = cands.slice(0, CHECK_N);
+const results = await Promise.all(list.map(async (c) => {
+try {
+const res = await new Client().get("https://www.bilibili.com/video/" + c.bvid + "/", this.biliHeaders());
+const html = res.body || "";
+if (html.indexOf("视频去哪了呢")!== -1) return null;
+const m = html.match(/"videos":(\d+)/);
+if (m && parseInt(m[1], 10) > 2) return null;
+return c;
+} catch (_) { return c;}
+}));
+return results.filter(Boolean);
+}
 // B站搜全片：返回最多 MAX_EPISODES 个候选（已排序：干净高清优先、配音/上色版最后、
 // 同档按片长与 TMDB 的差距从小到大；同一 bvid 只留一次）。
-async findBiliFilms(titleZh, titleEn, runtimeMin) {
+// v0.0.6：搜索词加年份消歧（“惊魂记 1960 电影”），再过 video 页核查（拒多分P/已删）。
+async findBiliFilms(titleZh, titleEn, runtimeMin, year) {
 const nameStrs = [titleZh, titleEn].filter(Boolean);
 const queries = [];
-if (titleZh) queries.push(titleZh + " 电影");
-if (titleEn && titleEn!== titleZh) queries.push(titleEn + " movie");
+const y = year? String(year): "";
+if (titleZh) queries.push(titleZh + (y? " " + y: "") + " 电影");
+if (titleEn && titleEn!== titleZh) queries.push(titleEn + (y? " " + y: "") + " movie");
 const seen = {};
 const cands = [];
 for (const q of queries) {
@@ -417,11 +460,13 @@ if (a.demoted!== b.demoted) return a.demoted? 1: -1;
 if (a.hd!== b.hd) return b.hd - a.hd;
 return (a.diff - b.diff) || (b.dur - a.dur);
 });
-return cands.slice(0, MAX_EPISODES);
+// v0.0.6：video 页核查（拒多分P/已删），再取前 MAX_EPISODES 条。
+const verified = await this.checkBiliPages(cands);
+return verified.slice(0, MAX_EPISODES);
 }
 // 旧版单挑（留作兼容：老版集地址 bili:<id>:<标题>:<原名>:<片长> 还会走这条）。
-async findBiliFilm(titleZh, titleEn, runtimeMin) {
-const list = await this.findBiliFilms(titleZh, titleEn, runtimeMin);
+async findBiliFilm(titleZh, titleEn, runtimeMin, year) {
+const list = await this.findBiliFilms(titleZh, titleEn, runtimeMin, year);
 return list.length? list[0]: null;
 }
 // WebView 提 B站直链（和 seasonal.js 0.0.5 同一写法，手机已验证能播）。
