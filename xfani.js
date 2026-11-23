@@ -7,7 +7,7 @@ const mangayomiSources = [{
   "typeSource": "single",
   "itemType": 1,
   "isNsfw": false,
-  "version": "0.0.9",
+  "version": "0.0.10",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "xfani.js"
@@ -344,10 +344,13 @@ class DefaultExtension extends MProvider {
         return null;
       }
     }.bind(this);
-    // 1) fallback：一次取全部三条线（有中继时先走中继）
+    // 1) fallback：一次取全部三条线（有中继时先走中继）。
+    // 四个 host 并行调（手机上串行调 16 次要 50 秒，会超时；并行一次只要最慢那一路的时间）。
     const hosts = this.playbackHosts();
-    for (const host of hosts) {
-      const data = await callPlayback(host, { action: "fallback", episode_id: epId });
+    const results = await Promise.all(hosts.map(function (host) {
+      return callPlayback(host, { action: "fallback", episode_id: epId });
+    }));
+    for (const data of results) {
       if (pushData(data)) break;
     }
     if (items.length > 0) {
@@ -361,21 +364,25 @@ class DefaultExtension extends MProvider {
       });
       return items;
     }
-    // 2) fallback 失败：逐条线单独取，按偏好顺序（有中继时先走中继）
+    // 2) fallback 失败：逐条线单独取（也并行），按偏好顺序（有中继时先走中继）
     for (const sid of this.lineOrder()) {
-      for (const host of hosts) {
-        const data = await callPlayback(host, { action: "fallback", episode_id: epId, source_id: sid });
+      const r2 = await Promise.all(hosts.map(function (host) {
+        return callPlayback(host, { action: "fallback", episode_id: epId, source_id: sid });
+      }));
+      let done = false;
+      for (const data of r2) {
         if (data && data.ok) {
-          // 单条返回的 url 就是该线的地址
           if (data.url) push(data.url, this.lineName(sid));
           if (Array.isArray(data.candidates)) {
             for (const c of data.candidates) {
               if (c && c.url) push(c.url, c.source_name || this.lineName(sid));
             }
           }
+          done = true;
           break;
         }
       }
+      if (done) break;
     }
     return items;
   }
