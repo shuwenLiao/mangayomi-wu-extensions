@@ -1,4 +1,5 @@
 // Xfani 中继 Worker（Cloudflare Workers 免费版即可）
+// v1.1 并行版：三域名并行试，取首个成功返回
 // 作用：手机直连 Supabase 取视频接口被挡，改走这个中继。
 // 中继在 Cloudflare 边缘跑，能正常调通 Supabase 的三个域名，
 // 把结果原样返回给手机。手机只要能打开 workers.dev 就行。
