@@ -7,7 +7,7 @@ const mangayomiSources = [{
   "typeSource": "single",
   "itemType": 1,
   "isNsfw": false,
-  "version": "0.0.10",
+  "version": "0.0.11",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "xfani.js"
@@ -118,7 +118,15 @@ class DefaultExtension extends MProvider {
 
   apiHeaders() {
     return {
-      "Content-Type": "application/json",
+      // 注意：header 名必须用小写 "content-type"。Mangayomi 的 JS Client
+      // 桥接代码用小写 key 查表才走 JSON 分支；写 "Content-Type" 会漏判，
+      // body 会被当成表单编码，Edge Function 的 req.json() 解析失败。
+      // 同理 body 要传对象、不要 JSON.stringify，否则桥接会二次编码。
+      // 再加 "Accept-Encoding": "identity" 强制服务端返回明文 JSON——
+      // 直连接口默认返回 gzip、中继旧版返回 Brotli，手机端疑似不解压，
+      // 强制明文可一次性排除压缩变量（RPC 本来就是明文，不受影响）。
+      "content-type": "application/json",
+      "Accept-Encoding": "identity",
       "apikey": XF_API_KEY,
       "Authorization": "Bearer " + XF_API_KEY,
       "User-Agent": XF_UA
@@ -141,7 +149,7 @@ class DefaultExtension extends MProvider {
         const res = await new Client().post(
           host + "/rest/v1/rpc/" + name,
           this.apiHeaders(),
-          JSON.stringify(params || {})
+          params || {}
         );
         const data = JSON.parse(res.body || "null");
         if (data !== null && data !== undefined) return data;
@@ -312,6 +320,13 @@ class DefaultExtension extends MProvider {
     const seen = {};
     const push = function (u, q) {
       if (!u || seen[u]) return;
+      // 关键：把 URL 里的非 ASCII（如中文）编码。备用线 m3u8 是
+      // https://dl.playxf.top/新番/... 这种含中文的裸地址，Mangayomi 的
+      // Dart 侧遇到未编码中文 URL 会丢弃整个视频列表。
+      // 注意：不能直接用 encodeURI，它会把已编码的 %E8 二次编成 %25E8
+      // （实测导致 401）；只替换非 ASCII 字符，已有的 %XX 原样保留。
+      try { u = u.replace(/[^\x00-\x7F]/g, function (ch) { return encodeURIComponent(ch); }); } catch (_) {}
+      if (seen[u]) return;
       seen[u] = true;
       items.push({ url: u, originalUrl: u, quality: q || "Origin" });
     };
@@ -338,7 +353,7 @@ class DefaultExtension extends MProvider {
     const callPlayback = async function (host, body) {
       try {
         const res = await new Client().post(host + "/functions/v1/issue-web-playback", this.apiHeaders(),
-          JSON.stringify(body));
+          body);
         return JSON.parse(res.body || "");
       } catch (e) {
         return null;
