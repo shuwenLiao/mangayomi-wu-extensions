@@ -7,7 +7,7 @@ const mangayomiSources = [{
   "typeSource": "single",
   "itemType": 1,
   "isNsfw": false,
-  "version": "0.0.7",
+  "version": "0.0.8",
   "dateFormat": "",
   "dateFormatLocale": "",
   "pkgPath": "xfani.js"
@@ -22,6 +22,13 @@ const mangayomiSources = [{
 //   详情剧集：番剧页 HTML 是服务端渲染的，直接解析剧集链接
 //   播放：POST api.xifanacg.com/functions/v1/issue-web-playback
 //        body {"action":"fallback","episode_id":…}，返回直链 mp4/m3u8。
+// v0.0.8：中继。手机直连 Supabase 三个域名取视频全灭，但 Chrome 浏览器
+//   能播——说明接口从手机是够得着的，只是 Mangayomi 那条网络路径
+//   （代理节点）被挡。另辟蹊径：不再让手机直接调 Supabase，
+//   改走一个 Cloudflare Workers 中继（免费）。中继在边缘跑，
+//   能正常调通 Supabase，手机只要能打开 workers.dev 就行。
+//   部署见 xfani-relay-worker.js（5 分钟），地址填到扩展设置
+//   “中继地址”里；不填就走原来的直连三域名。
 // v0.0.7：国内域名放第一。关代理实测：xfani 转 4 秒才空，
 //   AGE/流行列表直接刷不出——说明海外域名（api 德国、supa 香港）
 //   在手机上是“卡住”不是“秒拒”，代码按 api->supa->galentwww 顺序
@@ -249,6 +256,25 @@ class DefaultExtension extends MProvider {
     return m ? m[1] : "";
   }
 
+  // 中继地址偏好（v0.0.8）。填 Cloudflare Workers 地址，如
+  // https://xfani-relay.你的名字.workers.dev（不用加后缀）。
+  // 读不到或为空时返回 ""，表示不走中继、直连 Supabase。
+  getRelayUrl() {
+    try {
+      const pref = new SharedPreferences();
+      const v = (pref.get("relay") || "").trim();
+      if (v && v.indexOf("http") === 0) return v.replace(/\/+$/, "");
+    } catch (_) {}
+    return "";
+  }
+
+  // 取视频用的 host 顺序：有中继时中继放第一，再是直连三域名。
+  playbackHosts() {
+    const relay = this.getRelayUrl();
+    if (relay) return [relay].concat(XF_API_HOSTS);
+    return XF_API_HOSTS;
+  }
+
   // 播放线路偏好（默认主线-1 = 4）。读不到或非法时返回 "4"。
   getPreferredLine() {
     try {
@@ -316,8 +342,9 @@ class DefaultExtension extends MProvider {
         return null;
       }
     }.bind(this);
-    // 1) fallback：一次取全部三条线
-    for (const host of XF_API_HOSTS) {
+    // 1) fallback：一次取全部三条线（有中继时先走中继）
+    const hosts = this.playbackHosts();
+    for (const host of hosts) {
       const data = await callPlayback(host, { action: "fallback", episode_id: epId });
       if (pushData(data)) break;
     }
@@ -332,9 +359,9 @@ class DefaultExtension extends MProvider {
       });
       return items;
     }
-    // 2) fallback 失败：逐条线单独取，按偏好顺序
+    // 2) fallback 失败：逐条线单独取，按偏好顺序（有中继时先走中继）
     for (const sid of this.lineOrder()) {
-      for (const host of XF_API_HOSTS) {
+      for (const host of hosts) {
         const data = await callPlayback(host, { action: "fallback", episode_id: epId, source_id: sid });
         if (data && data.ok) {
           // 单条返回的 url 就是该线的地址
@@ -376,6 +403,19 @@ class DefaultExtension extends MProvider {
         "valueIndex": 0,
         "entries": ["稀饭新番主线-1", "稀饭新番主线-2", "稀饭备用-1"],
         "entryValues": ["4", "1", "2"]
+      }
+    }, {
+      // v0.0.8：中继地址。手机直连 Supabase 被挡时用。
+      // 部署见 xfani-relay-worker.js（Cloudflare Workers，免费）；
+      // 填部署完的地址，如 https://xfani-relay.你的名字.workers.dev。
+      // 不填就走原来的直连三域名。
+      "key": "relay",
+      "editTextPreference": {
+        "title": "中继地址",
+        "summary": "Cloudflare Workers 中继（选填，不填则直连）",
+        "value": "",
+        "dialogTitle": "中继地址",
+        "dialogMessage": "形如 https://xfani-relay.你的名字.workers.dev"
       }
     }];
   }
