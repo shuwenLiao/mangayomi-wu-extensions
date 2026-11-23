@@ -1,7 +1,8 @@
 // Xfani 中继 Worker（Cloudflare Workers 免费版即可）
-// v1.4 并行 + 缓存 + 不压缩版：三域名并行试，取首个成功返回；成功结果缓存 1 小时，
+// v1.5 并行 + 缓存 + 不压缩 + URL 编码版：三域名并行试，取首个成功返回；成功结果缓存 1 小时，
 // 同一集重复请求直接回缓存；响应加 no-transform，禁止 Cloudflare 用 Brotli 压缩
 // （Mangayomi 的 Dart 客户端解不了 Brotli，返回 br 编码会导致 JSON 解析失败、列表为空）。
+// v1.5 新增：返回前对 URL 做 encodeURI——备用线 m3u8 含未编码中文，Dart 侧会丢弃整个列表。
 // 作用：手机直连 Supabase 取视频接口被挡，改走这个中继。
 // 中继在 Cloudflare 边缘跑，能正常调通 Supabase 的三个域名，
 // 把结果原样返回给手机。手机只要能打开 workers.dev 就行。
@@ -42,7 +43,7 @@ export default {
     // 先查缓存：同一集 + 同一线路，成功结果缓存 1 小时。
     const cache = caches.default;
     const cacheKey = new Request(
-      'https://xfani-relay-cache/v14/episode/' + episodeId + '/' + (sourceId || 'all'),
+      'https://xfani-relay-cache/v15/episode/' + episodeId + '/' + (sourceId || 'all'),
       { method: 'GET' }
     );
     try {
@@ -75,6 +76,15 @@ export default {
     });
     try {
       const data = await Promise.any(attempts);
+      // 关键修复：把返回 URL 里的非 ASCII（如中文）做 encodeURI。
+      // 备用线 m3u8 是 https://dl.playxf.top/新番/... 这种含中文的裸 URL，
+      // Mangayomi 的 Dart 侧遇到未编码中文 URL 会丢弃整个视频列表（RPC 没中文 URL 所以不受影响）。
+      // encodeURI 只编码非 ASCII，保留 /:?&=+$ 等结构，已编码的 %XX 不会二次编码。
+      const enc = (u) => { try { return encodeURI(u); } catch (_) { return u; } };
+      if (data) {
+        if (data.url) data.url = enc(data.url);
+        if (Array.isArray(data.candidates)) data.candidates.forEach((c) => { if (c && c.url) c.url = enc(c.url); });
+      }
       const resp = new Response(JSON.stringify(data), {
         headers: {
           'Content-Type': 'application/json',
