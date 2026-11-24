@@ -7,7 +7,7 @@ const mangayomiSources = [{
 "typeSource": "single",
 "itemType": 1,
 "isNsfw": false,
-"version": "0.0.9",
+"version": "0.0.10",
 "dateFormat": "",
 "dateFormatLocale": "",
 "pkgPath": "classicfilm.js"
@@ -67,6 +67,16 @@ const IA_MAX_MP4_BYTES = 3 * 1024 * 1024 * 1024;
 const IA_EXCLUDE = ["cd-rom", "cdrom", "cd rom", "disc image", "iso image", "vocaloid", "ranking",
 "trailer", "预告", "colorized", "colorisée", "colorise", "colorised", "上色", "彩色",
 "ebert cut", "fan edit", "fanedit", "recut", "re-cut"];
+// v0.0.10：IA 英文别名。TMDB 的 original_title 有时是非拉丁文（切腹、七人の侍），
+// 直接拿它搜 IA 搜不到英文标题的条目。切腹用英文搜 5 条全是正片；七武士日文搜
+// 也能命中（Os Sete Samurais，葡语版全片），别名只在首选搜不到候选时才试。
+const IA_ALIAS = {
+"切腹": ["Harakiri", "Seppuku"],
+"七人の侍": ["Seven Samurai"],
+"七武士": ["Seven Samurai"],
+"天国と地獄": ["High and Low"],
+"天国与地狱": ["High and Low"]
+};
 // 经典片截止年份：1979 年底之前上映的才算“经典”。
 const CLASSIC_MAX_YEAR = 1979;
 // 全片判定：B站视频片长至少 60 分钟才可能是正片（预告/解说/剪辑都短得多）。
@@ -363,6 +373,10 @@ if (k > best) best = k;
 }
 return best;
 }
+// 标题归一化：小写、标点变空格、多空格合并。只用于 isRelevant 的兜底比对。
+normTitle(s) {
+return String(s || "").toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]+/g, " ").replace(/\s+/g, " ").trim();
+}
 // 标题是否和片名沾边：片名要作为独立词出现，不能是更长词的一部分。
 // v0.0.6：之前用子串匹配，“小教父”会撞上“教父”（The Outsiders 当成 The Godfather）。
 // 现在要求片名前后都是分隔符（空格/标点/括号/开头结尾），前面是汉字、后面是汉字/
@@ -392,6 +406,21 @@ const rest = t.slice(j, j + 8);
 if (!/^(part|ii|iii|iv|v|2|3|4|5|续|前传|外传|episode|chapter)/.test(rest)) return true;
 }
 idx = t.indexOf(nn, idx + 1);
+}
+}
+// v0.0.10：标点归一化兜底。IA 标题常带冒号/逗号（"The Godfather: Part II"、
+// "The Good, The Bad, And The Ugly"），精确子串匹配会漏掉。去掉标点再比一次，
+// 续集守卫（Part II / 数字）同样在归一化串上做。精确匹配优先，兜底只补漏。
+const nt = " " + this.normTitle(title) + " ";
+for (const n of nameStrs) {
+const nn = this.normTitle(n);
+if (!nn) continue;
+const padded = " " + nn + " ";
+let idx = nt.indexOf(padded);
+while (idx !== -1) {
+const rest = nt.slice(idx + padded.length).replace(/^ +/, "").slice(0, 8);
+if (!/^(part|ii|iii|iv|v|2|3|4|5|续|前传|外传|episode|chapter)/.test(rest)) return true;
+idx = nt.indexOf(padded, idx + 1);
 }
 }
 return false;
@@ -509,24 +538,45 @@ return list.length? list[0]: null;
 // 挑大小在 100MB~3GB 的 mp4（太小是片段/预告，太大是 mkv/合集），返回直链信息。
 // 实测：十二怒汉 12-angry-men-1957_202308（532MB，96.1分钟）、七武士
 // seven-samurai-1954-4k（1136MB，207.2分钟），片长和 TMDB 完全吻合，无水印。
+// v0.0.10：IA 请求失败重发一次。本机到 archive.org 的连接常被重置（fetch failed），
+ // 单次失败就整部片返回空；只在抛错时重试一次，中间等 500ms（连续重发也常一起断），
+ // 不重试 HTTP 错误状态。
+async iaGet(url) {
+try {
+return await new Client().get(url, this.headers());
+} catch (e) {
+try { await new Promise(function (r) { setTimeout(r, 500); }); } catch (_) {}
+return await new Client().get(url, this.headers());
+}
+}
 async findIAFilms(titleZh, titleEn, runtimeMin, year) {
 const qTitle = titleEn || titleZh;
 if (!qTitle) return [];
+// v0.0.10：别名只在首选搜不到候选时才试（切腹→Harakiri；七武士日文搜已能命中，
+// 不触发）。别名也放进 nameStrs，否则 isRelevant 会把英文标题的条目拒掉。
+const aliases = [];
+for (const k of [titleZh, titleEn]) {
+const a = k && IA_ALIAS[k];
+if (a) for (const x of a) if (aliases.indexOf(x) === -1) aliases.push(x);
+}
+const nameStrs = [titleZh, titleEn].concat(aliases).filter(Boolean);
+const queryTitles = [qTitle].concat(aliases);
+let cands = [];
+for (const qt of queryTitles) {
 let docs = [];
 try {
 // v0.0.9：搜索词加年份（和 B站搜索保持一致）。不加年份时教父的前 10 条全是
 // 游戏/采访等垃圾，AI 修复版那条进不了前 10；加 year:1972 后只剩 2 条，AI 修复
 // 版就是其中之一。年份是 IA 的字段过滤，比 B站的模糊关键词可靠得多。
 const q = year
-? "title:(" + qTitle + ") AND year:" + year + " AND mediatype:movies"
-: "title:(" + qTitle + ") AND mediatype:movies";
+? "title:(" + qt + ") AND year:" + year + " AND mediatype:movies"
+: "title:(" + qt + ") AND mediatype:movies";
 const url = IA_SEARCH + "?q=" + encodeURIComponent(q) + "&fl[]=identifier&fl[]=title&fl[]=year&rows=10&output=json";
-const res = await new Client().get(url, this.headers());
+const res = await this.iaGet(url);
 const d = JSON.parse(res.body || "");
 docs = (d && d.response && d.response.docs) || [];
-} catch (_) { return [];}
-const nameStrs = [titleZh, titleEn].filter(Boolean);
-const cands = [];
+} catch (_) { docs = [];}
+cands = [];
 for (const doc of docs) {
 const id = String(doc.identifier || "").trim();
 const t = String(doc.title || "").trim();
@@ -539,12 +589,15 @@ const y = parseInt(doc.year || "0", 10) || 0;
 if (year && y && y!== year) continue;
 cands.push({ identifier: id, title: t, year: y});
 }
+if (cands.length) break;
+}
 if (!cands.length) return [];
 const CHECK_N = 5;
 const list = cands.slice(0, CHECK_N);
+const rt = parseInt(runtimeMin || "0", 10) || 0;
 const results = await Promise.all(list.map(async (c) => {
 try {
-const res = await new Client().get(IA_META + c.identifier, this.headers());
+const res = await this.iaGet(IA_META + c.identifier);
 const d = JSON.parse(res.body || "");
 const files = (d && d.files) || [];
 let best = null;
@@ -553,10 +606,19 @@ const name = String(f.name || "");
 if (!/\.mp4$/i.test(name)) continue;
 const size = parseInt(f.size || "0", 10) || 0;
 if (size < IA_MIN_MP4_BYTES || size > IA_MAX_MP4_BYTES) continue;
-if (!best || size > best.size) best = { name: name, size: size};
+// v0.0.10：片长校验。IA 不验片长会把片段当正片：黄金三镖客的“墓园场景”
+// 只有 6.8 分钟、139MB，0.0.9 会把它排成正片 1。mp4 自带 length（秒），
+// 用 B站同一容差 max(10分钟,10%) 比 TMDB 片长；length 缺失（未知）才放行。
+const len = parseFloat(f.length || "0") || 0;
+if (len > 0) {
+if (rt > 0) {
+if (Math.abs(len / 60 - rt) > Math.max(DUR_TOL_MIN, rt * DUR_TOL_RATIO)) continue;
+} else if (len < FULL_FILM_MIN_SECONDS) continue;
+}
+if (!best || size > best.size) best = { name: name, size: size, lengthSec: len};
 }
 if (!best) return null;
-return { identifier: c.identifier, filename: best.name, size: best.size, title: c.title};
+return { identifier: c.identifier, filename: best.name, size: best.size, title: c.title, lengthSec: best.lengthSec};
 } catch (_) { return null;}
 }));
 const seen = {};
